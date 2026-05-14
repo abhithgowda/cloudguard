@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 3 (Set Up Terraform Remote Backend)
-- **Next up:** STEP 4 (Build the IAM Terraform Module)
+- **Last completed STEP:** 4 (Build the IAM Terraform Module)
+- **Next up:** STEP 5 (Build the DynamoDB Terraform Module)
 - **Last updated:** 2026-05-14
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -85,21 +85,44 @@
 
 ---
 
-### ⏭️ STEP 4 — Build the IAM Terraform Module
-*Status: Not started — UP NEXT*
+### ✅ STEP 4 — Build the IAM Terraform Module
+*Completed: 2026-05-14*
 
-**What STEP 4 involves (read before starting):**
-- File to work in: `terraform/modules/iam/main.tf`, `variables.tf`, `outputs.tf`
-- Create one IAM role per Lambda function (4 roles total) with separate least-privilege policies.
-- Each role: assume-role policy for `lambda.amazonaws.com` + CloudWatch Logs permissions + function-specific permissions.
-- Roles: `cost_scanner`, `security_scanner`, `resource_cleanup`, `report_generator`
-- Use `environment` variable so role names differ between dev/prod (e.g. `cloudguard-cost-scanner-dev`)
-- Output all 4 role ARNs (consumed by the Lambda module in STEP 8)
-- Done when: `terraform plan` in `terraform/environments/dev` shows the 4 roles (no apply yet)
+- **Files written:**
+  - `terraform/modules/iam/main.tf` — 4 roles, 4 inline policies, 4 managed-policy attachments. Uses data sources for account_id + region; locals for naming + assume-role policy + resource ARNs.
+  - `terraform/modules/iam/variables.tf` — `environment`, `project`
+  - `terraform/modules/iam/outputs.tf` — 4 role ARNs + 4 role names
+  - `terraform/environments/dev/main.tf` — wired up the iam module
+  - `terraform/environments/dev/outputs.tf` — surfaces `iam_role_arns` map
+  - `terraform/environments/dev/terraform.tfvars` — created locally with real `alert_email` (gitignored — not committed)
+- **Role naming convention:** `${project}-${environment}-${function}-role` (e.g. `cloudguard-dev-cost-scanner-role`)
+- **Permissions design — key decisions:**
+  - **Inline policies** (not customer-managed): each policy is unique to one role, inline makes ownership obvious and policy auto-deletes with role.
+  - **`AWSLambdaBasicExecutionRole`** (AWS-managed) attached to every role for CloudWatch Logs perms — don't reinvent AWS-blessed patterns.
+  - **Resource scoping**:
+    - DynamoDB → scoped to specific table ARNs built from naming convention (tables don't exist yet, but ARNs are deterministic)
+    - S3 reports bucket → scoped to `arn:aws:s3:::cloudguard-dev-reports/*`
+    - SNS alerts topic → scoped to `arn:aws:sns:<region>:<account>:cloudguard-dev-alerts`
+    - `ce:*`, `ec2:Describe*`, `rds:Describe*`, `iam:List*`, `ses:SendEmail` → `Resource = "*"` (AWS API limitation — these actions don't support resource-level perms)
+    - **`ec2:DeleteVolume`, `ec2:ReleaseAddress`** → `Resource = "*"` with WARNING comment. In production, scope with Condition on tag `ec2:ResourceTag/AutoCleanup = true`. Hardening TODO.
+- **`terraform plan` result:** ✅ `Plan: 12 to add, 0 to change, 0 to destroy.` — 4 roles + 4 inline policies + 4 managed-policy attachments. No apply yet (per STEP 4 blueprint).
 
 ---
 
-### ⬜ STEP 5 — Build the DynamoDB Terraform Module
+### ⏭️ STEP 5 — Build the DynamoDB Terraform Module
+*Status: Not started — UP NEXT*
+
+**What STEP 5 involves (read before starting):**
+- File to work in: `terraform/modules/dynamodb/{main,variables,outputs}.tf`
+- Create 3 tables:
+  - `cloudguard-findings`: PK `finding_id` + SK `timestamp`; GSIs on `severity` and `category`; TTL on `expires_at`
+  - `cloudguard-cost-data`: PK `date` + SK `service_name`
+  - `cloudguard-remediation-log`: PK `remediation_id` + SK `timestamp`; GSI on `status`
+- All 3: PAY_PER_REQUEST, PITR enabled, KMS encryption.
+- Naming convention MUST match IAM module locals (e.g. `cloudguard-dev-findings`) — IAM ARNs were built against this.
+- Output table names and ARNs.
+- Done when: `terraform plan` shows 3 tables added.
+
 ### ⬜ STEP 6 — Build the S3 Terraform Module
 ### ⬜ STEP 7 — Build the SNS Terraform Module
 ### ⬜ STEP 8 — Build the Lambda Terraform Module (Reusable)
@@ -133,6 +156,10 @@
 | 2026-05-14 | S3 native locking (`use_lockfile = true`) instead of DynamoDB | Terraform >= 1.10 supports it natively; removes a dependency; user on 1.14.6 | DynamoDB lock table — still valid, gives visible lock state, but unnecessary overhead |
 | 2026-05-14 | SSE-S3 (AES256) for state bucket, not SSE-KMS | Free, zero config; KMS adds audit trail but costs money — overkill for personal project | SSE-KMS — better for company accounts needing audit trails of state access |
 | 2026-05-14 | Commit `.terraform.lock.hcl` | Terraform official recommendation; pins provider versions for reproducible inits | Gitignore it — rejected: then provider version can drift between machines |
+| 2026-05-14 | Inline policies per role (not customer-managed) | Each policy is unique to one role; inline makes ownership obvious and auto-deletes with role | Customer-managed — only better if shared across roles |
+| 2026-05-14 | Attach `AWSLambdaBasicExecutionRole` for Logs perms | AWS-blessed pattern, don't reinvent the wheel | Custom inline Logs policy — works but adds maintenance |
+| 2026-05-14 | Build DynamoDB/SNS/S3 ARNs in IAM via naming convention (resources don't exist yet) | Tighter than `Resource = "*"`; deterministic ARN format; ARNs validated at apply not plan | Pass real ARNs as inputs — better long term but creates ordering complexity; revisit if drift |
+| 2026-05-14 | `ec2:DeleteVolume`/`ReleaseAddress` with `Resource = "*"` for now | Can't know zombie resource IDs ahead of time | Tag-based Condition `ec2:ResourceTag/AutoCleanup = true` — hardening TODO |
 
 ---
 
@@ -150,9 +177,11 @@
 
 ## Open Questions / TODOs
 
-- [ ] Pick alert email address for SNS subscription (needed in STEP 7) — will go in `terraform.tfvars`
+- [x] Pick alert email address — set in local `terraform.tfvars` during STEP 4
 - [ ] Decide Slack vs email-only for alerts (Slack webhook stored in Secrets Manager if used)
 - [ ] Confirm free tier limits before STEP 17 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month
+- [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true`
+- [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
 
 ---
 
@@ -165,6 +194,12 @@
 - **STEP 3 — why S3 + `use_lockfile` over S3 + DynamoDB:** "Prior to Terraform 1.10, DynamoDB was required for locking because S3 had no atomic write primitive. From 1.10 onwards, the S3 backend uses S3's native conditional writes to create a `.tflock` file atomically — same guarantee, one fewer service to manage. I'm on 1.14.6 so I use native locking."
 
 - **STEP 3 — why commit `.terraform.lock.hcl`:** "The lock file pins provider versions — in our case `hashicorp/aws v5.100.0`. Committing it means every developer and every CI run gets the exact same provider, not whatever is latest that day. It's the Terraform equivalent of a `package-lock.json`."
+
+- **STEP 4 — why inline policy over managed:** "Each Lambda's policy is unique — nothing shared between roles. Inline policy makes the ownership relationship obvious (this policy belongs to this role, nothing else) and the policy is deleted automatically when the role is deleted. Customer-managed policies are better when the same permissions are attached to multiple roles — they have their own ARN, can be versioned, and updated independently."
+
+- **STEP 4 — why I have `Resource = "*"` on some statements:** "Not all AWS actions support resource-level permissions. `ce:GetCostAndUsage`, `ec2:DescribeInstances`, `iam:ListUsers`, `ses:SendEmail` — none of these accept a Resource ARN. AWS publishes a service authorization reference table that lists this per action. For everything that COULD be scoped, I did — DynamoDB tables, SNS topic, S3 bucket — all scoped to specific ARNs built from a naming convention. For destructive EC2 actions that can't pre-scope, in production I'd add a tag-based Condition."
+
+- **STEP 4 — least privilege vs least permissive:** "Least privilege isn't `Resource = "*"` — that's just permissive. Least privilege means the role can do exactly what it needs and nothing more. For cost scanner that means: Cost Explorer read, EC2/RDS describe (can't be scoped further), DynamoDB writes scoped to exactly two tables. The cost scanner cannot — and will never be able to — touch S3, SNS, IAM, or any other DynamoDB table."
 
 - **STEP 5 (DynamoDB billing mode):** _[fill in during STEP 5]_
 - **STEP 8 (reusable Lambda module — why module vs inline):** _[fill in during STEP 8]_

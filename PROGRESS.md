@@ -23,7 +23,7 @@
 4. For any Terraform work: `cd terraform\environments\dev` — this is where `terraform plan/apply` runs.
 5. The remote backend is already initialised — no need to re-run `setup_backend.sh`.
 6. **Use PowerShell** for all file/directory operations (Bash resets cwd in this env).
-7. Terraform is in the user's PATH but not Claude Code's shell — ask user to run `terraform` commands in their own terminal and paste output.
+7. Terraform IS in Claude Code's shell PATH (confirmed STEP 5) — `terraform plan` can be run directly without needing the user's terminal.
 
 ---
 
@@ -180,7 +180,7 @@
 | 2026-05-14 | STEP 1 | Python 3.12 unavailable | Proceeded with 3.13.7; risk noted | Always pin runtime versions early |
 | 2026-05-14 | STEP 2 | Bash in Claude Code resets cwd to git worktree | Use PowerShell for all file/dir ops | PowerShell is reliable; Bash is not in this env |
 | 2026-05-14 | STEP 2 | `.terraform.lock.hcl` incorrectly added to `.gitignore` | Removed from gitignore in STEP 3; lock file committed | Lock file = commit; `.terraform/` dir = ignore |
-| 2026-05-14 | STEP 3 | Terraform not in Claude Code's PATH | User runs terraform commands in their own PowerShell, pastes output | Don't try to run terraform via Claude Code's shell |
+| 2026-05-14 | STEP 3 | Terraform not in Claude Code's PATH at the time | Workaround: user ran terraform in their own terminal. **Corrected STEP 5:** Terraform IS in Claude Code's shell PATH — `terraform plan/init` can run directly. | PATH availability may depend on session startup order; always try directly first |
 | 2026-05-14 | STEP 3 | GitHub Actions firing on every push (empty workflow files) | Changed trigger to `workflow_dispatch` until STEP 20 | Stub workflow files need a safe trigger |
 
 ---

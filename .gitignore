@@ -30,9 +30,12 @@ env/
 # -----------------------------------------------------------------------------
 # Terraform
 # -----------------------------------------------------------------------------
-# Downloaded provider plugins — huge, always regeneratable with terraform init
+# Downloaded provider plugins — huge binary files, always regeneratable with terraform init
 .terraform/
-.terraform.lock.hcl
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored.
+# It pins provider versions (e.g. hashicorp/aws v5.100.0) so every
+# terraform init uses identical providers. Commit it — Terraform docs say so.
 
 # State files — contain real resource IDs, ARNs, and sometimes secrets
 *.tfstate

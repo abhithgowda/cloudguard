@@ -1,0 +1,15 @@
+# Deploy pipeline — terraform apply on merge to main
+# Full implementation: STEP 20
+# Manual trigger only until then — will not fire on push
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder
+        run: echo "Deploy pipeline not yet configured. See STEP 20."

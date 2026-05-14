@@ -1,0 +1,14 @@
+# CI pipeline — lint, test, terraform plan on pull requests
+# Full implementation: STEP 20
+# Manual trigger only until then — will not fire on push
+
+name: CI
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Placeholder
+        run: echo "CI pipeline not yet configured. See STEP 20."

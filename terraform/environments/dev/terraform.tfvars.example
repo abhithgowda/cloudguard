@@ -1,0 +1,11 @@
+# =============================================================================
+# terraform.tfvars.example
+#
+# Copy this file to terraform.tfvars and fill in your real values.
+# terraform.tfvars is gitignored — never commit real values.
+# =============================================================================
+
+aws_region  = "ap-south-1"
+environment = "dev"
+project     = "cloudguard"
+alert_email = "your-email@example.com"

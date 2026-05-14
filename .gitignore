@@ -91,6 +91,12 @@ ehthumbs.db
 Desktop.ini
 
 # -----------------------------------------------------------------------------
+# Claude Code — local session files, never commit
+# -----------------------------------------------------------------------------
+.claude/settings.local.json
+.claude/worktrees/
+
+# -----------------------------------------------------------------------------
 # Project-specific
 # -----------------------------------------------------------------------------
 # Lambda deployment packages (created during CI/CD)

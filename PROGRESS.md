@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 4 (Build the IAM Terraform Module)
-- **Next up:** STEP 5 (Build the DynamoDB Terraform Module)
+- **Last completed STEP:** 5 (Build the DynamoDB Terraform Module)
+- **Next up:** STEP 6 (Build the S3 Terraform Module)
 - **Last updated:** 2026-05-14
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -109,19 +109,26 @@
 
 ---
 
-### ⏭️ STEP 5 — Build the DynamoDB Terraform Module
-*Status: Not started — UP NEXT*
+### ✅ STEP 5 — Build the DynamoDB Terraform Module
+*Completed: 2026-05-14*
 
-**What STEP 5 involves (read before starting):**
-- File to work in: `terraform/modules/dynamodb/{main,variables,outputs}.tf`
-- Create 3 tables:
-  - `cloudguard-findings`: PK `finding_id` + SK `timestamp`; GSIs on `severity` and `category`; TTL on `expires_at`
-  - `cloudguard-cost-data`: PK `date` + SK `service_name`
-  - `cloudguard-remediation-log`: PK `remediation_id` + SK `timestamp`; GSI on `status`
-- All 3: PAY_PER_REQUEST, PITR enabled, KMS encryption.
-- Naming convention MUST match IAM module locals (e.g. `cloudguard-dev-findings`) — IAM ARNs were built against this.
-- Output table names and ARNs.
-- Done when: `terraform plan` shows 3 tables added.
+- **Files written:**
+  - `terraform/modules/dynamodb/main.tf` — 3 DynamoDB tables with all schema, GSIs, TTL, PITR, KMS
+  - `terraform/modules/dynamodb/variables.tf` — `project`, `environment`
+  - `terraform/modules/dynamodb/outputs.tf` — 6 outputs: name + ARN for each of the 3 tables
+  - `terraform/environments/dev/main.tf` — wired up the dynamodb module
+  - `terraform/environments/dev/outputs.tf` — added `dynamodb_table_names` and `dynamodb_table_arns` outputs
+- **Table names (match IAM module ARNs exactly):**
+  - `cloudguard-dev-findings` — PK `finding_id`, SK `timestamp`; GSI: `severity-index`, `category-index`; TTL: `expires_at`
+  - `cloudguard-dev-cost-data` — PK `date`, SK `service_name`; no GSIs
+  - `cloudguard-dev-remediation-log` — PK `remediation_id`, SK `timestamp`; GSI: `status-index`
+- **Key decisions:**
+  - **PAY_PER_REQUEST over provisioned:** Scanner runs every 6 hours — traffic is bursty, not steady. Provisioned capacity requires you to predict RCUs/WCUs and either over-provision (wastes money) or under-provision (throttles). PAY_PER_REQUEST scales automatically and costs nothing when idle — correct for an infrequent automated workload.
+  - **KMS with AWS-managed key (`aws/dynamodb`):** Blueprint requires KMS encryption. Using the AWS-managed DynamoDB key (`enabled = true`, no custom key ARN) — it's free, zero config, and still encrypts at rest with KMS. Customer-managed key costs $1/month per key and adds management overhead; not justified for a personal dev environment.
+  - **GSI sort key = `timestamp`:** All GSIs use `timestamp` as the sort key so queries return results in chronological order by default. The alternative (no sort key) would return results in arbitrary order and make "latest N critical findings" queries less efficient.
+  - **TTL only on findings table:** Cost data and remediation logs are operational records worth keeping indefinitely (or until PITR recovery window). Findings are ephemeral — a 90-day auto-expiry matches the IAM key rotation policy window and keeps the table lean.
+  - **PITR on all 3 tables:** Point-in-Time Recovery gives a 35-day rollback window for free on PAY_PER_REQUEST tables. Cheap insurance against accidental writes during testing.
+- **`terraform plan` result:** ✅ `Plan: 15 to add, 0 to change, 0 to destroy.` — 12 IAM resources (STEP 4, not yet applied) + 3 DynamoDB tables. No apply yet (blueprint does not require apply until STEP 17).
 
 ### ⬜ STEP 6 — Build the S3 Terraform Module
 ### ⬜ STEP 7 — Build the SNS Terraform Module
@@ -160,6 +167,9 @@
 | 2026-05-14 | Attach `AWSLambdaBasicExecutionRole` for Logs perms | AWS-blessed pattern, don't reinvent the wheel | Custom inline Logs policy — works but adds maintenance |
 | 2026-05-14 | Build DynamoDB/SNS/S3 ARNs in IAM via naming convention (resources don't exist yet) | Tighter than `Resource = "*"`; deterministic ARN format; ARNs validated at apply not plan | Pass real ARNs as inputs — better long term but creates ordering complexity; revisit if drift |
 | 2026-05-14 | `ec2:DeleteVolume`/`ReleaseAddress` with `Resource = "*"` for now | Can't know zombie resource IDs ahead of time | Tag-based Condition `ec2:ResourceTag/AutoCleanup = true` — hardening TODO |
+| 2026-05-14 | DynamoDB PAY_PER_REQUEST billing mode | Bursty workload (scan every 6 hrs, idle between); provisioned would require capacity guessing | Provisioned — better for sustained high-throughput workloads where you know your RCU/WCU |
+| 2026-05-14 | KMS using AWS-managed key (`aws/dynamodb`) not customer-managed | Free, zero config, still KMS-backed; CMK costs $1/month per key — overkill for personal dev | Customer-managed KMS key — better for regulated environments needing key policy control + audit trail |
+| 2026-05-14 | PITR enabled on all 3 DynamoDB tables | 35-day rollback window; free on PAY_PER_REQUEST tables; cheap insurance during testing phase | Disable PITR — saves nothing (it's free), removes safety net |
 
 ---
 
@@ -201,6 +211,10 @@
 
 - **STEP 4 — least privilege vs least permissive:** "Least privilege isn't `Resource = "*"` — that's just permissive. Least privilege means the role can do exactly what it needs and nothing more. For cost scanner that means: Cost Explorer read, EC2/RDS describe (can't be scoped further), DynamoDB writes scoped to exactly two tables. The cost scanner cannot — and will never be able to — touch S3, SNS, IAM, or any other DynamoDB table."
 
-- **STEP 5 (DynamoDB billing mode):** _[fill in during STEP 5]_
+- **STEP 5 — DynamoDB PAY_PER_REQUEST vs provisioned:** "Provisioned capacity requires you to predict read and write capacity units upfront. If you under-provision, DynamoDB throttles your requests. If you over-provision, you pay for idle capacity. For CloudGuard, the scanners run on a schedule — traffic is completely bursty: zero for 6 hours, then a burst of writes when a scan completes. PAY_PER_REQUEST handles that burst automatically, costs nothing when idle, and removes the operational burden of capacity planning. It's slightly more expensive per request than provisioned at high, sustained throughput — but for a scan-on-schedule system, it's the right call."
+
+- **STEP 5 — Why GSIs on severity and category:** "DynamoDB is a key-value store. Without GSIs, fetching all CRITICAL findings would require a full table scan — reads every item, expensive and slow. A GSI on `severity` makes it a single Query call: `severity = CRITICAL`, sorted by `timestamp`. Same logic for `category` — lets the report generator pull all cost findings or all security findings without scanning everything else."
+
+- **STEP 5 — Why TTL on findings but not the other two tables:** "TTL lets DynamoDB auto-delete items based on a Unix timestamp attribute, at no cost. Findings are time-bounded — a 90-day-old security finding is stale, the resource may have been fixed. Auto-expiry keeps the table lean and avoids manual cleanup jobs. Cost data and remediation logs are operational records — you want to keep them to spot trends and audit what was auto-deleted."
 - **STEP 8 (reusable Lambda module — why module vs inline):** _[fill in during STEP 8]_
 - **STEP 15 (Step Functions over chained Lambdas):** _[fill in during STEP 15]_

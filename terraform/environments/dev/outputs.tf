@@ -14,3 +14,21 @@ output "iam_role_arns" {
     report_generator = module.iam.report_generator_role_arn
   }
 }
+
+output "dynamodb_table_names" {
+  description = "Names of all 3 DynamoDB tables."
+  value = {
+    findings        = module.dynamodb.findings_table_name
+    cost_data       = module.dynamodb.cost_data_table_name
+    remediation_log = module.dynamodb.remediation_log_table_name
+  }
+}
+
+output "dynamodb_table_arns" {
+  description = "ARNs of all 3 DynamoDB tables."
+  value = {
+    findings        = module.dynamodb.findings_table_arn
+    cost_data       = module.dynamodb.cost_data_table_arn
+    remediation_log = module.dynamodb.remediation_log_table_arn
+  }
+}

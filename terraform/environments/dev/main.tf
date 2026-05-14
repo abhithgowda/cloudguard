@@ -24,3 +24,12 @@ module "iam" {
   environment = var.environment
   project     = var.project
 }
+
+# -----------------------------------------------------------------------------
+# DynamoDB module — findings, cost-data, remediation-log tables (STEP 5)
+# -----------------------------------------------------------------------------
+module "dynamodb" {
+  source      = "../../modules/dynamodb"
+  environment = var.environment
+  project     = var.project
+}

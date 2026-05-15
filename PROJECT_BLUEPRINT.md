@@ -238,7 +238,7 @@ cloudguard/
 
 ---
 
-# EXECUTION PLAN — 23 STEPS
+# EXECUTION PLAN — 24 STEPS
 
 > **Rule for Claude Code:** Do ONE step per session. After each step, stop and let the human review + commit + ask "why did you choose X?". Never run `terraform apply` without explicit human confirmation.
 
@@ -343,10 +343,41 @@ Open `terraform/modules/dynamodb/main.tf`.
 
 Output table names and ARNs. Test: `terraform plan`.
 
-## STEP 6 — Build the S3 Terraform Module
+## STEP 6 — Build the KMS CMK Module
+
+A single shared customer-managed KMS key (CMK) for envelope encryption of DynamoDB tables, the S3 reports bucket, and the SNS alerts topic. Created here so every downstream module can reference it consistently.
+
+Open `terraform/modules/kms/main.tf`.
+
+1. Create one `aws_kms_key` resource:
+   - `description = "CloudGuard ${var.environment} shared CMK — DynamoDB, S3, SNS envelope encryption"`
+   - `enable_key_rotation = true` (annual automatic rotation; required for SOC2/PCI alignment)
+   - `deletion_window_in_days = 30` (maximum — gives recovery time if disabled by mistake)
+   - `key_usage = "ENCRYPT_DECRYPT"`
+2. Create `aws_kms_alias`:
+   - `name = "alias/${var.project}-${var.environment}"` (e.g. `alias/cloudguard-dev`)
+   - `target_key_id = aws_kms_key.main.key_id`
+3. Attach a key policy (`policy = data.aws_iam_policy_document.kms_key_policy.json`) that:
+   - Grants the **root account** full admin (standard AWS-recommended root statement — without this you can lock yourself out of the key).
+   - Grants the 4 Lambda execution role ARNs (from STEP 4) `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey`.
+   - Adds `kms:ViaService` conditions on each grant scoping it to the consuming service:
+     - `dynamodb.<region>.amazonaws.com` for tables
+     - `s3.<region>.amazonaws.com` for reports bucket
+     - `sns.<region>.amazonaws.com` for alerts topic
+4. Variables (`terraform/modules/kms/variables.tf`): `project`, `environment`, `lambda_role_arns` (list of strings — pass `[module.iam.cost_scanner_role_arn, ...]`).
+5. Outputs (`terraform/modules/kms/outputs.tf`): `key_arn`, `key_id`, `alias_arn`, `alias_name`.
+6. **Retrofit STEP 5 (DynamoDB):** add `kms_key_arn` variable to the dynamodb module and replace the `server_side_encryption { enabled = true }` block with `server_side_encryption { enabled = true, kms_key_arn = var.kms_key_arn }` on all 3 tables. Pass `kms_key_arn = module.kms.key_arn` from `dev/main.tf`.
+
+**Single shared CMK vs. per-service CMKs:** one key at $1/month covers all three services here; separate keys would cost $3/month and improve blast-radius isolation (compromise one, the others survive). For personal dev that's not worth it. In a regulated production setup, per-service CMKs with tighter key policies are the better call.
+
+**Why a CMK over AWS-managed (`aws/dynamodb`, `aws/s3`, etc.):** CMK lets you (a) write a key policy restricting who can Decrypt, (b) audit every Decrypt call in CloudTrail, (c) rotate on your own schedule, (d) revoke access by disabling the key without touching the table. The AWS-managed key gives you none of those controls — it's encrypt-at-rest checkbox only.
+
+Test: `terraform plan` — should show 1 KMS key, 1 alias, plus the modified DynamoDB encryption configuration.
+
+## STEP 7 — Build the S3 Terraform Module
 
 Create the reports bucket with:
-- Server-side encryption (SSE-KMS)
+- Server-side encryption (SSE-KMS) using the CMK from STEP 6 (`module.kms.key_arn`)
 - Versioning enabled
 - Block ALL public access (all 4 settings = true)
 - Lifecycle rule: transition to Glacier after 90 days, delete after 365 days
@@ -354,15 +385,15 @@ Create the reports bucket with:
 - Bucket policy that only allows your Lambda roles to write to it
 - Output bucket name and ARN
 
-## STEP 7 — Build the SNS Terraform Module
+## STEP 8 — Build the SNS Terraform Module
 
 1. Create SNS topic `cloudguard-alerts`.
-2. Enable encryption on the topic with KMS.
+2. Enable encryption on the topic with the CMK from STEP 6 (`module.kms.key_arn`).
 3. Create email subscription (use a variable for the email address).
 4. Create a topic policy.
 5. Output topic ARN.
 
-## STEP 8 — Build the Lambda Terraform Module (Reusable)
+## STEP 9 — Build the Lambda Terraform Module (Reusable)
 
 Reusable module that takes these inputs:
 - `function_name`
@@ -381,7 +412,7 @@ Logic:
 3. Create CloudWatch Log Group with 30-day retention.
 4. Output function ARN and function name.
 
-## STEP 9 — Write the Cost Scanner Lambda
+## STEP 10 — Write the Cost Scanner Lambda
 
 Open `src/cost_scanner/handler.py`.
 
@@ -418,7 +449,7 @@ Helper `store_findings(table, anomalies)`:
 
 Create `requirements.txt`: just `boto3`.
 
-## STEP 10 — Write the Security Scanner Lambda
+## STEP 11 — Write the Security Scanner Lambda
 
 Open `src/security_scanner/handler.py`. This Lambda orchestrates multiple security checks.
 
@@ -459,7 +490,7 @@ Open `src/security_scanner/handler.py`. This Lambda orchestrates multiple securi
 
 Each finding must have: `finding_id` (uuid), `resource_id`, `resource_type`, `check_name`, `severity` (CRITICAL/HIGH/MEDIUM/LOW), `description`, `recommendation`, `category="security"`, `timestamp`.
 
-## STEP 11 — Write the Resource Cleanup Lambda
+## STEP 12 — Write the Resource Cleanup Lambda
 
 Open `src/resource_cleanup/handler.py`.
 
@@ -492,7 +523,7 @@ Open `src/resource_cleanup/handler.py`.
 - Calculate storage cost.
 - Return list with: snapshot_id, start_time, volume_size, estimated_cost.
 
-## STEP 12 — Write the Report Generator Lambda
+## STEP 13 — Write the Report Generator Lambda
 
 Open `src/report_generator/handler.py`.
 
@@ -514,7 +545,7 @@ Open `src/report_generator/handler.py`.
 - Remediation section: what was auto-fixed, what needs manual attention.
 - Return HTML string.
 
-## STEP 13 — Write the Shared Utilities
+## STEP 14 — Write the Shared Utilities
 
 `src/shared/aws_helpers.py`:
 - `paginate(client, method, key, **kwargs)` — generic paginator for any boto3 paginated API.
@@ -531,7 +562,7 @@ Open `src/report_generator/handler.py`.
 - `send_sns_alert(topic_arn, subject, message)` — sends SNS notification.
 - `send_slack_webhook(webhook_url, message_payload)` — sends Slack notification via webhook (get URL from Secrets Manager).
 
-## STEP 14 — Write Unit Tests
+## STEP 15 — Write Unit Tests
 
 `tests/test_cost_scanner.py`:
 - Use `unittest.mock` to mock boto3 clients.
@@ -554,7 +585,7 @@ Open `src/report_generator/handler.py`.
 
 Run all tests: `pytest tests/ -v`.
 
-## STEP 15 — Build the Step Functions Workflow
+## STEP 16 — Build the Step Functions Workflow
 
 Open `terraform/modules/step-functions/main.tf`. Define the state machine in Amazon States Language (ASL):
 
@@ -632,7 +663,7 @@ Open `terraform/modules/step-functions/main.tf`. Define the state machine in Ama
 3. Create the state machine resource in Terraform.
 4. Create IAM role for Step Functions with permission to invoke all Lambda functions.
 
-## STEP 16 — Build the EventBridge Terraform Module
+## STEP 17 — Build the EventBridge Terraform Module
 
 1. Create a scheduled rule that triggers every 6 hours:
    - `schedule_expression = "rate(6 hours)"`
@@ -642,7 +673,7 @@ Open `terraform/modules/step-functions/main.tf`. Define the state machine in Ama
    - Target = Report Generator Lambda directly.
 3. Create IAM role for EventBridge to invoke Step Functions and Lambda.
 
-## STEP 17 — Wire Everything Together in Dev Environment
+## STEP 18 — Wire Everything Together in Dev Environment
 
 Open `terraform/environments/dev/main.tf`. Call each module:
 
@@ -653,22 +684,37 @@ module "iam" {
   project     = "cloudguard"
 }
 
+module "kms" {
+  source      = "../../modules/kms"
+  environment = "dev"
+  project     = "cloudguard"
+  lambda_role_arns = [
+    module.iam.cost_scanner_role_arn,
+    module.iam.security_scanner_role_arn,
+    module.iam.resource_cleanup_role_arn,
+    module.iam.report_generator_role_arn,
+  ]
+}
+
 module "dynamodb" {
   source      = "../../modules/dynamodb"
   environment = "dev"
   project     = "cloudguard"
+  kms_key_arn = module.kms.key_arn
 }
 
 module "s3" {
   source      = "../../modules/s3"
   environment = "dev"
   project     = "cloudguard"
+  kms_key_arn = module.kms.key_arn
 }
 
 module "sns" {
   source      = "../../modules/sns"
   environment = "dev"
   alert_email = var.alert_email
+  kms_key_arn = module.kms.key_arn
 }
 
 module "cost_scanner" {
@@ -714,7 +760,7 @@ module "eventbridge" {
 7. `terraform apply` — type yes.
 8. Verify all resources are created in AWS Console.
 
-## STEP 18 — Create the Lambda Packaging Script
+## STEP 19 — Create the Lambda Packaging Script
 
 `scripts/package_lambdas.sh`:
 
@@ -743,7 +789,7 @@ done
 - Run it: `./scripts/package_lambdas.sh`
 - Verify zip files are created.
 
-## STEP 19 — Test the System End-to-End
+## STEP 20 — Test the System End-to-End
 
 1. AWS Console → Step Functions.
 2. Find the `cloudguard-workflow-dev` state machine.
@@ -756,7 +802,7 @@ done
 9. Check email — you should receive a notification.
 10. If anything fails, debug using CloudWatch Logs, fix the code, re-package, re-deploy.
 
-## STEP 20 — Build the CI/CD Pipeline
+## STEP 21 — Build the CI/CD Pipeline
 
 `.github/workflows/ci.yml`:
 
@@ -843,7 +889,7 @@ jobs:
 - Create a branch, make a change, open a PR — verify CI runs.
 - Merge the PR — verify deploy runs.
 
-## STEP 21 — Add CloudWatch Dashboard
+## STEP 22 — Add CloudWatch Dashboard
 
 1. In Terraform, create a CloudWatch Dashboard resource.
 2. Include widgets for:
@@ -857,7 +903,7 @@ jobs:
    - Lambda duration > 80% of timeout → SNS notification
    - Step Functions execution failed → SNS notification
 
-## STEP 22 — Write Documentation
+## STEP 23 — Write Documentation
 
 1. `README.md` — comprehensive, including:
    - Project description (2–3 paragraphs explaining what and why)
@@ -878,7 +924,7 @@ jobs:
    - How to adjust thresholds
    - Common troubleshooting scenarios
 
-## STEP 23 — Add Resource Tagging Strategy
+## STEP 24 — Add Resource Tagging Strategy
 
 1. Add a `tags` variable to **EVERY** Terraform module.
 2. Apply consistent tags to ALL resources:

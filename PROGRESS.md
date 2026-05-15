@@ -8,8 +8,8 @@
 ## Current Status
 
 - **Last completed STEP:** 5 (Build the DynamoDB Terraform Module)
-- **Next up:** STEP 6 (Build the S3 Terraform Module)
-- **Last updated:** 2026-05-14
+- **Next up:** STEP 6 (Build the KMS CMK Module — new, inserted 2026-05-15)
+- **Last updated:** 2026-05-15
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
 
@@ -128,26 +128,28 @@
   - **GSI sort key = `timestamp`:** All GSIs use `timestamp` as the sort key so queries return results in chronological order by default. The alternative (no sort key) would return results in arbitrary order and make "latest N critical findings" queries less efficient.
   - **TTL only on findings table:** Cost data and remediation logs are operational records worth keeping indefinitely (or until PITR recovery window). Findings are ephemeral — a 90-day auto-expiry matches the IAM key rotation policy window and keeps the table lean.
   - **PITR on all 3 tables:** Point-in-Time Recovery gives a 35-day rollback window for free on PAY_PER_REQUEST tables. Cheap insurance against accidental writes during testing.
-- **`terraform plan` result:** ✅ `Plan: 15 to add, 0 to change, 0 to destroy.` — 12 IAM resources (STEP 4, not yet applied) + 3 DynamoDB tables. No apply yet (blueprint does not require apply until STEP 17).
+- **`terraform plan` result:** ✅ `Plan: 15 to add, 0 to change, 0 to destroy.` — 12 IAM resources (STEP 4, not yet applied) + 3 DynamoDB tables. No apply yet (blueprint does not require apply until STEP 18).
+- **Note (2026-05-15):** STEP 5 currently uses AWS-managed `aws/dynamodb` key. Per blueprint amendment 2026-05-15, a new STEP 6 (KMS CMK Module) has been inserted; the DynamoDB module will be retrofitted in that session to consume `module.kms.key_arn`.
 
-### ⬜ STEP 6 — Build the S3 Terraform Module
-### ⬜ STEP 7 — Build the SNS Terraform Module
-### ⬜ STEP 8 — Build the Lambda Terraform Module (Reusable)
-### ⬜ STEP 9 — Write the Cost Scanner Lambda
-### ⬜ STEP 10 — Write the Security Scanner Lambda
-### ⬜ STEP 11 — Write the Resource Cleanup Lambda
-### ⬜ STEP 12 — Write the Report Generator Lambda
-### ⬜ STEP 13 — Write the Shared Utilities
-### ⬜ STEP 14 — Write Unit Tests
-### ⬜ STEP 15 — Build the Step Functions Workflow
-### ⬜ STEP 16 — Build the EventBridge Terraform Module
-### ⬜ STEP 17 — Wire Everything Together in Dev Environment
-### ⬜ STEP 18 — Create the Lambda Packaging Script
-### ⬜ STEP 19 — Test the System End-to-End
-### ⬜ STEP 20 — Build the CI/CD Pipeline
-### ⬜ STEP 21 — Add CloudWatch Dashboard
-### ⬜ STEP 22 — Write Documentation
-### ⬜ STEP 23 — Add Resource Tagging Strategy
+### ⬜ STEP 6 — Build the KMS CMK Module
+### ⬜ STEP 7 — Build the S3 Terraform Module
+### ⬜ STEP 8 — Build the SNS Terraform Module
+### ⬜ STEP 9 — Build the Lambda Terraform Module (Reusable)
+### ⬜ STEP 10 — Write the Cost Scanner Lambda
+### ⬜ STEP 11 — Write the Security Scanner Lambda
+### ⬜ STEP 12 — Write the Resource Cleanup Lambda
+### ⬜ STEP 13 — Write the Report Generator Lambda
+### ⬜ STEP 14 — Write the Shared Utilities
+### ⬜ STEP 15 — Write Unit Tests
+### ⬜ STEP 16 — Build the Step Functions Workflow
+### ⬜ STEP 17 — Build the EventBridge Terraform Module
+### ⬜ STEP 18 — Wire Everything Together in Dev Environment
+### ⬜ STEP 19 — Create the Lambda Packaging Script
+### ⬜ STEP 20 — Test the System End-to-End
+### ⬜ STEP 21 — Build the CI/CD Pipeline
+### ⬜ STEP 22 — Add CloudWatch Dashboard
+### ⬜ STEP 23 — Write Documentation
+### ⬜ STEP 24 — Add Resource Tagging Strategy
 
 **Legend:** ✅ done · ⏭️ up next · 🛑 blocked · ⬜ not started
 
@@ -170,6 +172,7 @@
 | 2026-05-14 | DynamoDB PAY_PER_REQUEST billing mode | Bursty workload (scan every 6 hrs, idle between); provisioned would require capacity guessing | Provisioned — better for sustained high-throughput workloads where you know your RCU/WCU |
 | 2026-05-14 | KMS using AWS-managed key (`aws/dynamodb`) not customer-managed | Free, zero config, still KMS-backed; CMK costs $1/month per key — overkill for personal dev | Customer-managed KMS key — better for regulated environments needing key policy control + audit trail |
 | 2026-05-14 | PITR enabled on all 3 DynamoDB tables | 35-day rollback window; free on PAY_PER_REQUEST tables; cheap insurance during testing phase | Disable PITR — saves nothing (it's free), removes safety net |
+| 2026-05-15 | Inserted new STEP 6 — Build the KMS CMK Module (renumbered subsequent steps; total 23 → 24) | Interview cred: must demonstrate CMK lifecycle, key policy with `kms:ViaService`, envelope encryption (Definition-of-Done interview Q). Original STEP 5 choice (AWS-managed key) was defensible for dev cost but gives no key policy/audit control. | (a) Leave AWS-managed keys — free, zero config, no audit. (b) Per-service CMKs ($3/month, better blast-radius isolation) — overkill for personal dev. Chose single shared CMK at $1/month. |
 
 ---
 
@@ -189,7 +192,8 @@
 
 - [x] Pick alert email address — set in local `terraform.tfvars` during STEP 4
 - [ ] Decide Slack vs email-only for alerts (Slack webhook stored in Secrets Manager if used)
-- [ ] Confirm free tier limits before STEP 17 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month
+- [ ] Confirm free tier limits before STEP 18 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month; KMS CMK = $1/month (not free tier)
+- [ ] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` once STEP 6 lands
 - [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true`
 - [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
 

@@ -42,3 +42,18 @@ output "kms_alias_name" {
   description = "Friendly alias name for the shared CMK."
   value       = module.kms.alias_name
 }
+
+output "s3_reports_bucket_name" {
+  description = "Name of the S3 reports bucket (HTML reports + CSV exports)."
+  value       = module.s3.reports_bucket_name
+}
+
+output "s3_reports_bucket_arn" {
+  description = "ARN of the S3 reports bucket."
+  value       = module.s3.reports_bucket_arn
+}
+
+output "s3_logs_bucket_name" {
+  description = "Name of the S3 access-logs bucket (receives logs from the reports bucket)."
+  value       = module.s3.logs_bucket_name
+}

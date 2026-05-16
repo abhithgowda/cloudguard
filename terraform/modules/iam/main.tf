@@ -36,10 +36,7 @@ locals {
   cost_data_arn       = "arn:aws:dynamodb:${local.region}:${local.account_id}:table/${local.name_prefix}-cost-data"
   remediation_log_arn = "arn:aws:dynamodb:${local.region}:${local.account_id}:table/${local.name_prefix}-remediation-log"
 
-  # -- S3 reports bucket ARN (created in STEP 6) -----------------------------
-  reports_bucket_arn = "arn:aws:s3:::${local.name_prefix}-reports"
-
-  # -- SNS alerts topic ARN (created in STEP 7) ------------------------------
+  # -- SNS alerts topic ARN (created in STEP 8) ------------------------------
   alerts_topic_arn = "arn:aws:sns:${local.region}:${local.account_id}:${local.name_prefix}-alerts"
 
   # -- Lambda assume-role trust policy ---------------------------------------
@@ -311,7 +308,7 @@ resource "aws_iam_role_policy" "report_generator" {
         Sid      = "S3WriteReports"
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
-        Resource = "${local.reports_bucket_arn}/*"
+        Resource = "${var.reports_bucket_arn}/*"
       },
       {
         # SES SendEmail does not have resource-level perms in the classic

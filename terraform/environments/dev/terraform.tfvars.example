@@ -5,7 +5,8 @@
 # terraform.tfvars is gitignored — never commit real values.
 # =============================================================================
 
-aws_region  = "ap-south-1"
-environment = "dev"
-project     = "cloudguard"
-alert_email = "your-email@example.com"
+aws_region    = "ap-south-1"
+environment   = "dev"
+project       = "cloudguard"
+alert_email   = "your-email@example.com"
+bucket_suffix = "your-handle"  # Globally-unique suffix for S3 buckets. Use your GitHub handle or similar.

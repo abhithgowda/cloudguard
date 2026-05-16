@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 6 (Build the KMS CMK Module + DynamoDB retrofit)
-- **Next up:** STEP 7 (Build the S3 Terraform Module)
+- **Last completed STEP:** 7 (Build the S3 Terraform Module + IAM retrofit for bucket-name uniqueness)
+- **Next up:** STEP 8 (Build the SNS Terraform Module)
 - **Last updated:** 2026-05-16
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -160,7 +160,48 @@
 
 ---
 
-### ⬜ STEP 7 — Build the S3 Terraform Module
+### ✅ STEP 7 — Build the S3 Terraform Module
+*Completed: 2026-05-16 · Commit: `<pending>`*
+
+- **Files written:**
+  - `terraform/modules/s3/main.tf` — 2 buckets (`reports`, `logs`) + versioning, public-access-block, SSE, lifecycle, logging, bucket-policy resources for each, plus 2 `aws_iam_policy_document` data sources
+  - `terraform/modules/s3/variables.tf` — `project`, `environment`, `reports_bucket_name`, `kms_key_arn`, `lambda_role_arns`
+  - `terraform/modules/s3/outputs.tf` — `reports_bucket_name`, `reports_bucket_arn`, `reports_bucket_domain_name`, `logs_bucket_name`, `logs_bucket_arn`
+- **Files modified (IAM retrofit):**
+  - `terraform/modules/iam/variables.tf` — added required `reports_bucket_arn` input
+  - `terraform/modules/iam/main.tf` — removed the hardcoded `local.reports_bucket_arn`; `report_generator` `s3:PutObject` policy now references `var.reports_bucket_arn`
+- **Files modified (dev wiring):**
+  - `terraform/environments/dev/main.tf` — added `locals { reports_bucket_name, reports_bucket_arn }` as the single source of truth; passed `reports_bucket_arn` into the iam module and `reports_bucket_name` into the new s3 module
+  - `terraform/environments/dev/variables.tf` — added `bucket_suffix` (validated against S3 naming rules; no default)
+  - `terraform/environments/dev/terraform.tfvars.example` — example `bucket_suffix = "your-handle"`
+  - `terraform/environments/dev/terraform.tfvars` — set `bucket_suffix = "abhithcogni"` (gitignored, matches state-bucket convention from STEP 3)
+  - `terraform/environments/dev/outputs.tf` — added `s3_reports_bucket_name`, `s3_reports_bucket_arn`, `s3_logs_bucket_name`
+- **Bucket names produced:**
+  - Reports: `cloudguard-dev-reports-abhithcogni`
+  - Logs:    `cloudguard-dev-reports-abhithcogni-logs`
+- **Reports bucket properties:**
+  - Versioning: ✅ Enabled
+  - Public access block: ✅ All 4 settings = true
+  - Encryption: SSE-KMS with the shared CMK (`module.kms.key_arn`), `bucket_key_enabled = true` (~99% fewer KMS API calls at no cost)
+  - Lifecycle: GLACIER_IR @ 90 days, expire @ 365 days; noncurrent → GLACIER_IR @ 30d / expire @ 90d; abort incomplete multipart uploads after 7d
+  - Access logging: delivered to logs bucket under `reports-access/` prefix
+  - Bucket policy: `Deny` all non-TLS requests (defense-in-depth, also a Checkov requirement) + `Allow` the 4 Lambda role ARNs to `PutObject` / `GetObject` / `ListBucket`
+- **Logs bucket properties:**
+  - SSE-S3 (AES256), NOT KMS — see decision below
+  - Versioning enabled, all public access blocked
+  - Lifecycle: expire @ 90 days (access logs balloon fast)
+  - Bucket policy: Deny non-TLS + Allow `logging.s3.amazonaws.com` to `PutObject`, scoped by `aws:SourceArn = reports bucket ARN` and `aws:SourceAccount = this account` — prevents log-injection from other accounts
+- **Key decisions:**
+  - **Bucket-name uniqueness via suffix variable (NOT random_id):** S3 bucket names are globally unique across all AWS accounts. Used `bucket_suffix` from gitignored tfvars (same pattern as the state bucket in STEP 3) — produces deterministic names that don't change between plans. `random_id` would force IAM to consume the bucket ARN as an output and break the clean "construct once in locals" pattern.
+  - **Bucket name as a `local` in `dev/main.tf`, not reconstructed in each module:** The IAM module builds the bucket ARN for `s3:PutObject`; the S3 module creates the bucket. If each rebuilt the name from inputs, a future drift (someone changes the format in one module but not the other) silently breaks the permission. One `local`, two consumers.
+  - **Logs bucket = SSE-S3, reports bucket = SSE-KMS:** S3 access-log delivery is performed by the `logging.s3.amazonaws.com` service principal; if the target bucket is SSE-KMS, the service needs `kms:GenerateDataKey` on the CMK, adding another grant for log metadata that contains no payload data. SSE-S3 is AWS's recommended path for log destinations.
+  - **`GLACIER_IR` over `GLACIER`:** Reports may be linked from an audit ticket months later — Glacier Flexible Retrieval (hours to restore) blocks that workflow. GLACIER_IR keeps the same archive-tier pricing with millisecond retrieval.
+  - **`Deny aws:SecureTransport = false` on both buckets:** Forces HTTPS for every S3 request. Checkov flags this as missing on every bucket without it. Belt-and-braces — TLS is the default in modern SDKs, but the explicit Deny makes it impossible to disable.
+  - **Bucket policy on reports bucket allows the Lambda role ARNs directly (not `*` with a Condition):** Identity-policy + resource-policy = AND, so a leaked credential outside those 4 roles is blocked at the bucket even if its IAM policy says otherwise. Listing the principals explicitly makes the audit trivial — `cat bucket-policy.json` shows exactly who can write.
+  - **`bucket_key_enabled = true`:** S3 bucket keys are envelope encryption at the bucket level. Each PutObject would normally call KMS `GenerateDataKey`; with bucket keys, one key per ~5-minute window is reused for all uploads. ~99% fewer KMS calls = ~99% lower KMS request bill. No security trade-off.
+  - **`SourceArn` + `SourceAccount` conditions on the logs-bucket Allow:** Without these the policy would (theoretically) let any S3 logging service in any account write to this bucket. Scoping by source ARN and account is the AWS-recommended pattern for service-principal Allow statements (the "confused deputy" prevention).
+- **`terraform plan` result:** ✅ `Plan: 30 to add, 0 to change, 0 to destroy.` — 12 IAM (STEP 4, now with `reports_bucket_arn` input) + 3 DynamoDB (STEP 5) + 2 KMS (STEP 6) + 13 S3 (this STEP). No apply (blueprint defers apply to STEP 18).
+
 ### ⬜ STEP 8 — Build the SNS Terraform Module
 ### ⬜ STEP 9 — Build the Lambda Terraform Module (Reusable)
 ### ⬜ STEP 10 — Write the Cost Scanner Lambda
@@ -206,6 +247,14 @@
 | 2026-05-16 | Used `aws_iam_policy_document` data source for the KMS policy, not inline JSON | Type-checked by Terraform, references variables cleanly, surfaces typos at plan time | Raw JSON heredoc — works but loses HCL validation and string-interp clarity |
 | 2026-05-16 | `deletion_window_in_days = 30` (maximum) | If the key is scheduled for deletion by mistake, there is a full month to cancel before the material is destroyed. Cost: zero. | 7 days (minimum) — faster cleanup but tight recovery window for a personal project where mistakes are likely |
 | 2026-05-16 | `multi_region = false` | Single-region deployment; multi-region CMKs are for cross-region replicas/DR | Multi-region — adds management overhead without a use case here |
+| 2026-05-16 | S3 bucket name uniqueness via `bucket_suffix` tfvar, not `random_id` | S3 names are globally unique; suffix produces a deterministic name and avoids forcing IAM to consume the bucket ARN as an output (which would create a module-ordering cycle) | `random_id` — works but name changes on destroy/recreate; account-id suffix — leaks account-id into git |
+| 2026-05-16 | Reports bucket name defined once as a `local` in `dev/main.tf`, consumed by both IAM and S3 | Single source of truth — if either module reconstructed the name from inputs, a future format drift would silently break IAM permissions | Reconstruct in each module — concise but fragile |
+| 2026-05-16 | Reports bucket = SSE-KMS, logs bucket = SSE-S3 | Log delivery service would need `kms:GenerateDataKey` on the CMK to write to a KMS-encrypted target; access logs contain no payload data — SSE-S3 is AWS's recommended pattern for log destinations | SSE-KMS on logs bucket too — works but adds another grant to the key policy with no security upside |
+| 2026-05-16 | Storage class `GLACIER_IR` for 90-day transition (not `GLACIER`/Flexible Retrieval) | Reports may be linked from an audit ticket months later — Flexible Retrieval (hours to restore) blocks that workflow. GLACIER_IR has the same archive pricing with millisecond retrieval. | `GLACIER` Flexible Retrieval — cheaper for write-once-never-read archives, but reports may be opened |
+| 2026-05-16 | `Deny aws:SecureTransport = false` on both buckets | Forces HTTPS for every request — explicit deny is uncircumventable, modern SDK default does the same on the happy path | Rely on SDK defaults — works for our code, but no protection against a misconfigured client |
+| 2026-05-16 | Reports bucket policy enumerates the 4 Lambda role ARNs (not `Principal = "*"` with Conditions) | Audit trail is one cat away; bucket policy + IAM policy = AND, so leaked credentials outside those 4 roles are blocked at the bucket | `Principal = "*"` + `aws:PrincipalArn` Condition — equally secure but reads worse |
+| 2026-05-16 | `bucket_key_enabled = true` on the reports bucket | S3 bucket keys reuse one data key per ~5-min window; ~99% fewer `kms:GenerateDataKey` calls and ~99% lower KMS bill at zero security cost | Per-object KMS calls (default) — wastes money for no benefit |
+| 2026-05-16 | Logs-bucket policy scoped with `aws:SourceArn` + `aws:SourceAccount` | Prevents the confused-deputy pattern where any account's S3 logging service could write here | Just allow `logging.s3.amazonaws.com` without source conditions — works, but is the textbook unsafe pattern |
 
 ---
 
@@ -263,5 +312,15 @@
 - **STEP 6 — Why the root-account admin statement is non-negotiable:** "KMS key policies are evaluated *in addition to* IAM policies, but if a key policy doesn't grant access, IAM can't override that. If you write a key policy that omits root and accidentally locks out every principal you listed, you have created an unusable key that you also can't delete or modify — Terraform can't fix a policy it doesn't have permission to read. AWS's `bypass_policy_lockout_safety_check` defaults to `false` specifically to prevent this. The root statement is the escape hatch."
 
 - **STEP 6 — Single shared CMK vs per-service CMKs:** "Per-service CMKs are the textbook answer for blast-radius isolation — compromise the DynamoDB key, the S3 bucket is still safe. They cost $1/month per key, so three services = $3/month plus key-policy duplication. For a personal dev project, $1 single shared key is the right trade. In a regulated production deployment — PCI, SOC2, HIPAA — the right call flips: per-service CMKs with tighter policies, possibly per-table or per-bucket, justified by the audit and isolation requirements."
+- **STEP 7 — Why S3 bucket names need a suffix:** "S3 bucket names share one global namespace across every AWS account in the world — there is exactly one `cloudguard-dev-reports`, and whoever creates it first owns it. So bucket names need a per-account uniqueness suffix. I put it in a tfvars variable rather than letting the module generate a `random_id`, because a deterministic name means the same Terraform code produces the same bucket on every machine and the IAM policy that references the bucket ARN doesn't break when someone destroys-and-recreates the bucket."
+
+- **STEP 7 — Identity policy vs resource policy (the AND rule):** "An S3 PutObject succeeds only if BOTH the caller's identity policy (their IAM role policy) AND the bucket's resource policy allow it — they're ANDed, not ORed. In CloudGuard the IAM module grants the 4 Lambda roles `s3:PutObject` on the reports bucket, AND the bucket policy enumerates those same 4 role ARNs. If a credential leaks to a fifth identity, the IAM side might be bypassed by an admin policy attached to that identity, but the bucket policy still rejects the write because that identity isn't in the principal list. That's defense-in-depth — two independent gates have to fail."
+
+- **STEP 7 — Why `Deny aws:SecureTransport = false`:** "The condition `aws:SecureTransport = false` is true for any request that arrived over HTTP. An explicit `Deny` on `s3:*` when that condition is true means a plaintext request can't succeed even if every other policy on the bucket would allow it. Modern SDKs default to HTTPS, but `Deny` is uncircumventable — it covers a misconfigured CLI, a curl command someone tries during debugging, a future SDK version that changes its default. The cost is zero, the floor it sets is hard."
+
+- **STEP 7 — How S3 bucket keys reduce KMS spend:** "Without bucket keys, every PutObject calls KMS `GenerateDataKey` to mint a unique data key, encrypts the object with it, and stores the encrypted data key alongside. At scale that becomes a real KMS bill — KMS charges per request, and bucket keys turn ~10,000 KMS calls into ~1. With `bucket_key_enabled = true`, S3 mints one data key per bucket per ~5-minute window and reuses it across uploads in that window. The encryption guarantee is unchanged — every object is still encrypted with a unique data key derived from the bucket key — but the KMS request count drops by roughly 99%."
+
+- **STEP 7 — Confused deputy and `aws:SourceArn`:** "The classic confused-deputy problem: an AWS service can be granted permission to call into your account on someone else's behalf. The S3 logging service principal can write objects — without scoping, any other AWS customer could theoretically configure their bucket to deliver logs to mine. `aws:SourceArn = <my reports bucket ARN>` and `aws:SourceAccount = <my account>` on the Allow statement say: only honor PutObject calls from MY S3 logging service writing logs about MY bucket. AWS recommends this pattern on every service-principal Allow statement."
+
 - **STEP 8 (reusable Lambda module — why module vs inline):** _[fill in during STEP 8]_
 - **STEP 15 (Step Functions over chained Lambdas):** _[fill in during STEP 15]_

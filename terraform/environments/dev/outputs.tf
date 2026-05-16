@@ -57,3 +57,18 @@ output "s3_logs_bucket_name" {
   description = "Name of the S3 access-logs bucket (receives logs from the reports bucket)."
   value       = module.s3.logs_bucket_name
 }
+
+output "sns_topic_arn" {
+  description = "ARN of the CloudGuard alerts SNS topic. Consumed by Lambdas (via env var) and downstream EventBridge wiring."
+  value       = module.sns.topic_arn
+}
+
+output "sns_topic_name" {
+  description = "Name of the CloudGuard alerts SNS topic."
+  value       = module.sns.topic_name
+}
+
+output "sns_email_subscription_arn" {
+  description = "ARN of the email subscription. Stays 'pending confirmation' until the recipient clicks the AWS confirmation link."
+  value       = module.sns.email_subscription_arn
+}

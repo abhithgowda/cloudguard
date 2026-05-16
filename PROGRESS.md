@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 7 (Build the S3 Terraform Module + IAM retrofit for bucket-name uniqueness)
-- **Next up:** STEP 8 (Build the SNS Terraform Module)
+- **Last completed STEP:** 8 (Build the SNS Terraform Module)
+- **Next up:** STEP 9 (Build the Lambda Terraform Module — reusable)
 - **Last updated:** 2026-05-16
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -202,7 +202,36 @@
   - **`SourceArn` + `SourceAccount` conditions on the logs-bucket Allow:** Without these the policy would (theoretically) let any S3 logging service in any account write to this bucket. Scoping by source ARN and account is the AWS-recommended pattern for service-principal Allow statements (the "confused deputy" prevention).
 - **`terraform plan` result:** ✅ `Plan: 30 to add, 0 to change, 0 to destroy.` — 12 IAM (STEP 4, now with `reports_bucket_arn` input) + 3 DynamoDB (STEP 5) + 2 KMS (STEP 6) + 13 S3 (this STEP). No apply (blueprint defers apply to STEP 18).
 
-### ⬜ STEP 8 — Build the SNS Terraform Module
+### ✅ STEP 8 — Build the SNS Terraform Module
+*Completed: 2026-05-16 · Commit: `<TBD>`*
+
+- **Files written:**
+  - `terraform/modules/sns/main.tf` — 1 `aws_sns_topic` (KMS-encrypted), 1 `aws_sns_topic_subscription` (email), 1 `aws_sns_topic_policy` from an `aws_iam_policy_document` with 3 statements
+  - `terraform/modules/sns/variables.tf` — `project`, `environment`, `kms_key_arn`, `alert_email` (regex-validated), `lambda_role_arns`
+  - `terraform/modules/sns/outputs.tf` — `topic_arn`, `topic_name`, `email_subscription_arn`
+- **Files modified (dev wiring):**
+  - `terraform/environments/dev/main.tf` — added `module "sns"` consuming `module.kms.key_arn`, `var.alert_email`, and the 4 Lambda role ARNs
+  - `terraform/environments/dev/outputs.tf` — added `sns_topic_arn`, `sns_topic_name`, `sns_email_subscription_arn`
+- **Topic name produced:** `cloudguard-dev-alerts` (matches the ARN already granted in the IAM module's `local.alerts_topic_arn` — no IAM retrofit needed).
+- **Topic properties:**
+  - SSE-KMS via the shared CMK (`module.kms.key_arn`) — the KMS policy's `AllowLambdasViaSNS` Sid (with `kms:ViaService = sns.<region>.amazonaws.com`, written in STEP 6) covers Lambda Publish-time encrypt calls. No KMS policy change in this STEP.
+  - One email subscription. AWS sends a confirmation email on `apply`; subscription stays in `PendingConfirmation` until the recipient clicks the link (3-day validity).
+- **Topic policy — 3 statements:**
+  1. `EnableRootAccountAdmin` — `sns:*` for `arn:aws:iam::<account>:root`. Same lockout-protection pattern as the KMS key policy in STEP 6.
+  2. `DenyInsecureTransport` — `Deny sns:Publish/Subscribe` when `aws:SecureTransport = false`. Defense-in-depth against plaintext Publish from a misconfigured client.
+  3. `AllowLambdaRolesPublish` — `sns:Publish` allowed only for the 4 Lambda execution role ARNs. Listed explicitly; no wildcards.
+- **Key decisions:**
+  - **Single fan-out topic over per-severity / per-category topics:** SNS's native model is one topic, many subscribers; routing CRITICAL-only later means a `FilterPolicy` on that subscription, not a second topic. Also keeps the IAM ARN list to one entry per role.
+  - **Email-only this STEP, Slack deferred:** Keeps scope small. Slack would require Secrets Manager (not yet built) and an HTTPS subscription with retry policy — a future enhancement, not a STEP 8 requirement.
+  - **Topic policy enumerates 4 Lambda role ARNs (not `Principal = "*"` + `aws:PrincipalArn` Condition):** Same defense-in-depth pattern as the S3 reports bucket. `cat topic-policy.json` shows exactly who can Publish. Identity-policy AND resource-policy must both Allow.
+  - **`aws_iam_policy_document` data source for the topic policy** (not raw JSON heredoc): type-checked, references variables cleanly, typos surface at plan time. Same pattern used in the KMS and S3 modules.
+  - **Email regex validation on the `alert_email` variable:** Catches typos at `plan` time instead of `apply` time when AWS rejects an invalid endpoint format. The regex is intentionally permissive (RFC 5322-strict is impractical and would reject valid edge cases).
+  - **No SES hardening in this STEP** (open TODO). SES isn't actually called until the report_generator Lambda (post-STEP 13); scoping `ses:SendEmail` to a verified-identity ARN now would require editing the IAM module without a way to test the change. Deferred to the post-STEP 13 hardening pass.
+- **`terraform plan` result:** ✅ `Plan: 33 to add, 0 to change, 0 to destroy.` — 30 prior + 1 SNS topic + 1 subscription + 1 topic policy. No apply (blueprint defers apply to STEP 18).
+- **Note on email confirmation:** The first `terraform apply` (STEP 18) will trigger a `Subscription Confirmation` email from AWS. Until the link is clicked, the subscription's `pending_confirmation = true` and no alerts will deliver. This is intentional AWS UX — Terraform cannot self-confirm an email subscription (anti-spam design).
+
+---
+
 ### ⬜ STEP 9 — Build the Lambda Terraform Module (Reusable)
 ### ⬜ STEP 10 — Write the Cost Scanner Lambda
 ### ⬜ STEP 11 — Write the Security Scanner Lambda
@@ -255,6 +284,10 @@
 | 2026-05-16 | Reports bucket policy enumerates the 4 Lambda role ARNs (not `Principal = "*"` with Conditions) | Audit trail is one cat away; bucket policy + IAM policy = AND, so leaked credentials outside those 4 roles are blocked at the bucket | `Principal = "*"` + `aws:PrincipalArn` Condition — equally secure but reads worse |
 | 2026-05-16 | `bucket_key_enabled = true` on the reports bucket | S3 bucket keys reuse one data key per ~5-min window; ~99% fewer `kms:GenerateDataKey` calls and ~99% lower KMS bill at zero security cost | Per-object KMS calls (default) — wastes money for no benefit |
 | 2026-05-16 | Logs-bucket policy scoped with `aws:SourceArn` + `aws:SourceAccount` | Prevents the confused-deputy pattern where any account's S3 logging service could write here | Just allow `logging.s3.amazonaws.com` without source conditions — works, but is the textbook unsafe pattern |
+| 2026-05-16 | Single SNS topic over per-severity / per-category topics | SNS's native fan-out model — CRITICAL-only routing later is a subscription `FilterPolicy`, not a second topic. Keeps IAM `local.alerts_topic_arn` to one ARN | Topic per severity (CRITICAL/HIGH/INFO) — works but multiplies IAM grants, KMS conditions, and topic policies for no functional gain at this scale |
+| 2026-05-16 | Email-only alert subscription for STEP 8; Slack deferred | Slack drags Secrets Manager (not yet built) and an HTTPS subscription with retry/dead-letter policy into a STEP scoped to SNS. Defer until alert volume justifies the channel | Add Slack subscription now — would close the open TODO but bloat STEP 8's blast radius and force a Secrets Manager mini-STEP |
+| 2026-05-16 | SNS topic policy enumerates 4 Lambda role ARNs as Publish principals | Defense-in-depth: identity-policy AND resource-policy must both Allow. Leaked credential outside those 4 roles is rejected at the topic. Audit is one `cat` away | `Principal = "*"` + `aws:PrincipalArn` Condition — equally secure but reads worse and obscures the audit |
+| 2026-05-16 | Email regex validation on `alert_email` variable at the module boundary | Fails at `plan` time instead of `apply` time when AWS rejects malformed endpoints — tightens the feedback loop | No validation — Terraform accepts the value and AWS errors during apply, costing a round trip |
 
 ---
 
@@ -322,5 +355,13 @@
 
 - **STEP 7 — Confused deputy and `aws:SourceArn`:** "The classic confused-deputy problem: an AWS service can be granted permission to call into your account on someone else's behalf. The S3 logging service principal can write objects — without scoping, any other AWS customer could theoretically configure their bucket to deliver logs to mine. `aws:SourceArn = <my reports bucket ARN>` and `aws:SourceAccount = <my account>` on the Allow statement say: only honor PutObject calls from MY S3 logging service writing logs about MY bucket. AWS recommends this pattern on every service-principal Allow statement."
 
-- **STEP 8 (reusable Lambda module — why module vs inline):** _[fill in during STEP 8]_
-- **STEP 15 (Step Functions over chained Lambdas):** _[fill in during STEP 15]_
+- **STEP 8 — Why a single SNS topic over per-severity topics:** "SNS is a fan-out service — one topic, many subscribers, with optional per-subscription filter policies. If I split CRITICAL and INFO into two topics, every Lambda needs two `sns:Publish` grants and two ARNs to remember, the KMS key policy needs two `kms:ViaService` Conditions to keep tight, and the topic-policy duplication doubles. The same routing is achievable with a `FilterPolicy` on a single subscription: `{ severity: [\"CRITICAL\"] }` on the on-call Slack subscriber, no filter on the email subscriber. One topic stays the right answer until the producer/consumer fan-out is genuinely heterogeneous — different services with different access patterns — and at that scale the right move is usually EventBridge, not multi-topic SNS."
+
+- **STEP 8 — Why the topic policy enumerates 4 Lambda role ARNs explicitly:** "S3 reports bucket, SNS alerts topic, and (later) the Secrets Manager secret all follow the same rule: identity policy AND resource policy must both allow. The IAM module grants `sns:Publish` on the topic ARN; the topic policy lists those same 4 role ARNs in its Allow statement. A credential leaked outside those 4 roles is rejected at the topic — even if the leaked credential has an `sns:*` IAM policy attached. `Principal = \"*\"` plus an `aws:PrincipalArn` Condition is equivalent in coverage, but the explicit list is what an auditor wants to see — `cat topic-policy.json` answers 'who can publish?' in one read."
+
+- **STEP 8 — Why email subscriptions stay PendingConfirmation:** "By design — Terraform cannot self-confirm an email subscription. If it could, an attacker with Terraform credentials could silently subscribe a victim's inbox to a high-volume topic and use SNS as a spam relay. AWS sends a confirmation email; until the recipient clicks the link (valid for 3 days), the subscription's `pending_confirmation = true` and no messages deliver to that endpoint. Same anti-confused-deputy logic as `aws:SourceArn`/`aws:SourceAccount` on the S3 logging bucket policy — the service refuses to be tricked into delivering somewhere it wasn't explicitly told to."
+
+- **STEP 8 — KMS encryption on SNS and how it links to STEP 6:** "Topic-level SSE-KMS encrypts message bodies at rest. The shared CMK from STEP 6 already had `AllowLambdasViaSNS` Sid with `kms:ViaService = sns.<region>.amazonaws.com` — written ahead of time exactly so STEP 8 wouldn't need to touch the KMS policy. When a Lambda calls `sns:Publish`, SNS calls `kms:GenerateDataKey` on the CMK *on the Lambda's behalf* — the `kms:ViaService` Condition checks that the call's `userAgent`-equivalent path goes through SNS, so a leaked Lambda credential can't directly call `kms:Encrypt` outside the SNS path."
+
+- **STEP 9 (reusable Lambda module — why module vs inline):** _[fill in during STEP 9]_
+- **STEP 16 (Step Functions over chained Lambdas):** _[fill in during STEP 16]_

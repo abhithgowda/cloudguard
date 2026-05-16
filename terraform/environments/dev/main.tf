@@ -117,3 +117,102 @@ module "sns" {
     module.iam.report_generator_role_arn,
   ]
 }
+
+# -----------------------------------------------------------------------------
+# Lambda modules (STEP 9)
+#
+# Four invocations of the reusable lambda module — one per scanner. Each gets:
+#   - its own IAM role (least-privilege from iam module)
+#   - env vars wired to the DynamoDB tables and SNS topic it actually uses
+#   - CMK-encrypted env vars + CMK-encrypted log group (STEP 9 KMS retrofit)
+#   - reserved_concurrent_executions = 5 (default) to cap runaway-bill risk
+#   - X-Ray active tracing (default) for per-Lambda timeline in Step Functions
+#
+# source_dir paths are relative to path.root (= terraform/environments/dev/).
+# The src/ directories currently hold STEP 2 stubs; STEPs 10-13 will fill them
+# with real Python. archive_file re-hashes on every plan, so a code change
+# auto-flows through to a new source_code_hash without touching this file.
+# -----------------------------------------------------------------------------
+module "cost_scanner" {
+  source        = "../../modules/lambda"
+  project       = var.project
+  environment   = var.environment
+  function_name = "${var.project}-${var.environment}-cost-scanner"
+  role_arn      = module.iam.cost_scanner_role_arn
+  source_dir    = "${path.root}/../../../src/cost_scanner"
+  kms_key_arn   = module.kms.key_arn
+
+  environment_variables = {
+    FINDINGS_TABLE  = module.dynamodb.findings_table_name
+    COST_DATA_TABLE = module.dynamodb.cost_data_table_name
+    SNS_TOPIC_ARN   = module.sns.topic_arn
+    ENVIRONMENT     = var.environment
+    LOG_LEVEL       = "INFO"
+  }
+}
+
+module "security_scanner" {
+  source        = "../../modules/lambda"
+  project       = var.project
+  environment   = var.environment
+  function_name = "${var.project}-${var.environment}-security-scanner"
+  role_arn      = module.iam.security_scanner_role_arn
+  source_dir    = "${path.root}/../../../src/security_scanner"
+  kms_key_arn   = module.kms.key_arn
+
+  environment_variables = {
+    FINDINGS_TABLE = module.dynamodb.findings_table_name
+    SNS_TOPIC_ARN  = module.sns.topic_arn
+    ENVIRONMENT    = var.environment
+    LOG_LEVEL      = "INFO"
+  }
+}
+
+module "resource_cleanup" {
+  source        = "../../modules/lambda"
+  project       = var.project
+  environment   = var.environment
+  function_name = "${var.project}-${var.environment}-resource-cleanup"
+  role_arn      = module.iam.resource_cleanup_role_arn
+  source_dir    = "${path.root}/../../../src/resource_cleanup"
+  kms_key_arn   = module.kms.key_arn
+
+  environment_variables = {
+    FINDINGS_TABLE        = module.dynamodb.findings_table_name
+    REMEDIATION_LOG_TABLE = module.dynamodb.remediation_log_table_name
+    SNS_TOPIC_ARN         = module.sns.topic_arn
+    ENVIRONMENT           = var.environment
+    LOG_LEVEL             = "INFO"
+    # Dry-run by default — actual deletes only happen when the Step Functions
+    # input or EventBridge target overrides this. Safety rail for the
+    # destructive permissions in the resource_cleanup role.
+    AUTO_REMEDIATE = "false"
+  }
+}
+
+module "report_generator" {
+  source        = "../../modules/lambda"
+  project       = var.project
+  environment   = var.environment
+  function_name = "${var.project}-${var.environment}-report-generator"
+  role_arn      = module.iam.report_generator_role_arn
+  source_dir    = "${path.root}/../../../src/report_generator"
+  kms_key_arn   = module.kms.key_arn
+
+  # Report generator runs once at the end of the workflow — give it more
+  # memory (CPU is proportional) and time so HTML generation + S3 upload
+  # complete inside a single invocation.
+  memory_size = 512
+  timeout     = 600
+
+  environment_variables = {
+    FINDINGS_TABLE        = module.dynamodb.findings_table_name
+    COST_DATA_TABLE       = module.dynamodb.cost_data_table_name
+    REMEDIATION_LOG_TABLE = module.dynamodb.remediation_log_table_name
+    REPORTS_BUCKET        = module.s3.reports_bucket_name
+    SNS_TOPIC_ARN         = module.sns.topic_arn
+    ALERT_EMAIL           = var.alert_email
+    ENVIRONMENT           = var.environment
+    LOG_LEVEL             = "INFO"
+  }
+}

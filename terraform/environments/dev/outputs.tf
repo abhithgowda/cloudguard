@@ -32,3 +32,13 @@ output "dynamodb_table_arns" {
     remediation_log = module.dynamodb.remediation_log_table_arn
   }
 }
+
+output "kms_key_arn" {
+  description = "ARN of the shared CMK (alias/cloudguard-{env}). Consumed by dynamodb/s3/sns modules."
+  value       = module.kms.key_arn
+}
+
+output "kms_alias_name" {
+  description = "Friendly alias name for the shared CMK."
+  value       = module.kms.alias_name
+}

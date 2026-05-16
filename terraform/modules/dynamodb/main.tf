@@ -6,7 +6,7 @@
 #   2. {project}-{env}-cost-data        — daily cost per service (30-day history)
 #   3. {project}-{env}-remediation-log  — actions taken by the cleanup Lambda
 #
-# All tables: PAY_PER_REQUEST, PITR, KMS (AWS-managed key aws/dynamodb).
+# All tables: PAY_PER_REQUEST, PITR, KMS (customer-managed CMK from kms module).
 #
 # Naming MUST match the pre-built ARNs in the IAM module locals (STEP 4).
 # If you change the name_prefix here, update the IAM module too.
@@ -76,10 +76,10 @@ resource "aws_dynamodb_table" "findings" {
   }
 
   server_side_encryption {
-    # enabled = true with no kms_key_arn → uses the AWS-managed DynamoDB key
-    # (alias/aws/dynamodb). Free. For production with compliance requirements,
-    # supply a customer-managed key ARN instead.
-    enabled = true
+    # Customer-managed CMK from the kms module (STEP 6). Lets us audit Decrypt
+    # calls in CloudTrail, set a key policy, and rotate on our own schedule.
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
   }
 }
 
@@ -110,7 +110,8 @@ resource "aws_dynamodb_table" "cost_data" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
   }
 }
 
@@ -154,6 +155,7 @@ resource "aws_dynamodb_table" "remediation_log" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = var.kms_key_arn
   }
 }

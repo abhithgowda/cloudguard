@@ -7,9 +7,9 @@
 
 ## Current Status
 
-- **Last completed STEP:** 5 (Build the DynamoDB Terraform Module)
-- **Next up:** STEP 6 (Build the KMS CMK Module — new, inserted 2026-05-15)
-- **Last updated:** 2026-05-15
+- **Last completed STEP:** 6 (Build the KMS CMK Module + DynamoDB retrofit)
+- **Next up:** STEP 7 (Build the S3 Terraform Module)
+- **Last updated:** 2026-05-16
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
 
@@ -131,7 +131,35 @@
 - **`terraform plan` result:** ✅ `Plan: 15 to add, 0 to change, 0 to destroy.` — 12 IAM resources (STEP 4, not yet applied) + 3 DynamoDB tables. No apply yet (blueprint does not require apply until STEP 18).
 - **Note (2026-05-15):** STEP 5 currently uses AWS-managed `aws/dynamodb` key. Per blueprint amendment 2026-05-15, a new STEP 6 (KMS CMK Module) has been inserted; the DynamoDB module will be retrofitted in that session to consume `module.kms.key_arn`.
 
-### ⬜ STEP 6 — Build the KMS CMK Module
+### ✅ STEP 6 — Build the KMS CMK Module
+*Completed: 2026-05-16*
+
+- **Files written:**
+  - `terraform/modules/kms/main.tf` — 1 `aws_kms_key`, 1 `aws_kms_alias`, 1 `data "aws_iam_policy_document" "kms_key_policy"` with 4 statements
+  - `terraform/modules/kms/variables.tf` — `project`, `environment`, `lambda_role_arns` (list)
+  - `terraform/modules/kms/outputs.tf` — `key_arn`, `key_id`, `alias_arn`, `alias_name`
+- **Files modified (DynamoDB retrofit):**
+  - `terraform/modules/dynamodb/variables.tf` — added required `kms_key_arn` input
+  - `terraform/modules/dynamodb/main.tf` — replaced all 3 `server_side_encryption` blocks with `{ enabled = true, kms_key_arn = var.kms_key_arn }`; updated header comment
+- **Files modified (dev wiring):**
+  - `terraform/environments/dev/main.tf` — added `module "kms"` between iam and dynamodb; passed `module.kms.key_arn` into the dynamodb module
+  - `terraform/environments/dev/outputs.tf` — added `kms_key_arn` and `kms_alias_name` outputs
+- **Key properties on the CMK:**
+  - `enable_key_rotation = true` — annual automatic rotation
+  - `deletion_window_in_days = 30` — maximum window; if scheduled for deletion in error, there's a month to cancel
+  - `key_usage = "ENCRYPT_DECRYPT"` — symmetric encryption (default)
+  - `multi_region = false` — single-region key; multi-region is for cross-region DR scenarios
+- **Alias:** `alias/cloudguard-dev`
+- **Key policy — design decisions:**
+  - **3 separate `Sid`s for the Lambda grants** (`AllowLambdasViaDynamoDB`, `AllowLambdasViaS3`, `AllowLambdasViaSNS`) instead of one combined statement with a list of `kms:ViaService` values. More verbose, but each statement reads as a single purpose — easier to audit and to revoke one service later without touching the others.
+  - **Root-account admin statement** (`kms:*` for the root principal) is non-negotiable on every CMK. Without it, a misconfigured policy can permanently lock you out — Terraform can't fix a key it can't touch.
+  - **`kms:ViaService` Conditions** on every Lambda grant — a compromised role can only call KMS *through* the service it's meant to use. A leaked cost-scanner credential can't call `kms:Decrypt` directly; it has to go via DynamoDB.
+  - **`aws_iam_policy_document` data source** instead of inline JSON heredoc — type-checked, references variables cleanly, surfaces typos at plan time.
+  - **`bypass_policy_lockout_safety_check = false`** (default kept) — AWS will refuse to create a key with a policy that locks out root, catching the most common foot-gun.
+- **`terraform plan` result:** ✅ `Plan: 17 to add, 0 to change, 0 to destroy.` — 12 IAM (STEP 4) + 3 DynamoDB (STEP 5, now with CMK refs) + 2 KMS. No apply (blueprint defers apply to STEP 18).
+
+---
+
 ### ⬜ STEP 7 — Build the S3 Terraform Module
 ### ⬜ STEP 8 — Build the SNS Terraform Module
 ### ⬜ STEP 9 — Build the Lambda Terraform Module (Reusable)
@@ -173,6 +201,11 @@
 | 2026-05-14 | KMS using AWS-managed key (`aws/dynamodb`) not customer-managed | Free, zero config, still KMS-backed; CMK costs $1/month per key — overkill for personal dev | Customer-managed KMS key — better for regulated environments needing key policy control + audit trail |
 | 2026-05-14 | PITR enabled on all 3 DynamoDB tables | 35-day rollback window; free on PAY_PER_REQUEST tables; cheap insurance during testing phase | Disable PITR — saves nothing (it's free), removes safety net |
 | 2026-05-15 | Inserted new STEP 6 — Build the KMS CMK Module (renumbered subsequent steps; total 23 → 24) | Interview cred: must demonstrate CMK lifecycle, key policy with `kms:ViaService`, envelope encryption (Definition-of-Done interview Q). Original STEP 5 choice (AWS-managed key) was defensible for dev cost but gives no key policy/audit control. | (a) Leave AWS-managed keys — free, zero config, no audit. (b) Per-service CMKs ($3/month, better blast-radius isolation) — overkill for personal dev. Chose single shared CMK at $1/month. |
+| 2026-05-16 | KMS key policy: one `Sid` per consuming service, not one combined statement | Each statement reads as a single purpose. Revoking S3's access later means removing one Sid — no risk of touching the DynamoDB or SNS grant by mistake. | One combined statement with `kms:ViaService` as a list of all 3 — terser but mixes concerns; harder to audit-diff. |
+| 2026-05-16 | Lambda grants scoped with `kms:ViaService` Condition | Defense-in-depth: a compromised role can only call KMS *through* the consuming service. A leaked cost-scanner credential cannot call `kms:Decrypt` directly. | No Condition — works, but turns the role into a general KMS principal that can decrypt outside of DynamoDB/S3/SNS pathways. |
+| 2026-05-16 | Used `aws_iam_policy_document` data source for the KMS policy, not inline JSON | Type-checked by Terraform, references variables cleanly, surfaces typos at plan time | Raw JSON heredoc — works but loses HCL validation and string-interp clarity |
+| 2026-05-16 | `deletion_window_in_days = 30` (maximum) | If the key is scheduled for deletion by mistake, there is a full month to cancel before the material is destroyed. Cost: zero. | 7 days (minimum) — faster cleanup but tight recovery window for a personal project where mistakes are likely |
+| 2026-05-16 | `multi_region = false` | Single-region deployment; multi-region CMKs are for cross-region replicas/DR | Multi-region — adds management overhead without a use case here |
 
 ---
 
@@ -193,7 +226,7 @@
 - [x] Pick alert email address — set in local `terraform.tfvars` during STEP 4
 - [ ] Decide Slack vs email-only for alerts (Slack webhook stored in Secrets Manager if used)
 - [ ] Confirm free tier limits before STEP 18 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month; KMS CMK = $1/month (not free tier)
-- [ ] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` once STEP 6 lands
+- [x] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` — done in STEP 6 (2026-05-16)
 - [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true`
 - [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
 
@@ -220,5 +253,15 @@
 - **STEP 5 — Why GSIs on severity and category:** "DynamoDB is a key-value store. Without GSIs, fetching all CRITICAL findings would require a full table scan — reads every item, expensive and slow. A GSI on `severity` makes it a single Query call: `severity = CRITICAL`, sorted by `timestamp`. Same logic for `category` — lets the report generator pull all cost findings or all security findings without scanning everything else."
 
 - **STEP 5 — Why TTL on findings but not the other two tables:** "TTL lets DynamoDB auto-delete items based on a Unix timestamp attribute, at no cost. Findings are time-bounded — a 90-day-old security finding is stale, the resource may have been fixed. Auto-expiry keeps the table lean and avoids manual cleanup jobs. Cost data and remediation logs are operational records — you want to keep them to spot trends and audit what was auto-deleted."
+
+- **STEP 6 — Customer-managed KMS key (CMK) vs AWS-managed key:** "AWS-managed keys (`aws/dynamodb`, `aws/s3`, etc.) tick the encrypt-at-rest checkbox but give you zero control. With a CMK I can (a) write a key policy that says *exactly* which principals can Decrypt, (b) see every Decrypt call in CloudTrail under my key's ID, (c) rotate on my own schedule, and (d) revoke access instantly by disabling the key without touching the table or bucket. For a regulated workload you need every one of those — for a personal dev environment, the $1/month is the cost of building the muscle memory before doing it in prod."
+
+- **STEP 6 — Envelope encryption explained:** "Symmetric encryption is fast on large data but you can't safely send the master key around. KMS solves this with envelope encryption: when DynamoDB writes an item, it calls `GenerateDataKey` on my CMK. KMS returns two copies of a fresh data key — one plaintext, one encrypted under the CMK. DynamoDB encrypts the row with the plaintext data key, stores the encrypted data key next to the ciphertext, and immediately discards the plaintext. To read, DynamoDB calls `Decrypt` on the encrypted data key, KMS hands back the plaintext, the row is decrypted, and the plaintext is discarded again. The CMK itself never touches the data — it only ever encrypts and decrypts other (much smaller) data keys. That's why it scales: one CMK can protect petabytes."
+
+- **STEP 6 — Why `kms:ViaService` matters:** "Without the Condition, granting a role `kms:Decrypt` lets it call Decrypt directly against the key from anywhere — Lambda code, CLI, anywhere with credentials. With `kms:ViaService = dynamodb.<region>.amazonaws.com`, the key will only honor Decrypt calls that originate from the DynamoDB service on my behalf. If a cost-scanner credential leaks, the attacker can't just `aws kms decrypt` blobs — they'd have to be coming through DynamoDB, which means they'd already need DynamoDB read on the specific table. It's defense-in-depth at the cryptography layer."
+
+- **STEP 6 — Why the root-account admin statement is non-negotiable:** "KMS key policies are evaluated *in addition to* IAM policies, but if a key policy doesn't grant access, IAM can't override that. If you write a key policy that omits root and accidentally locks out every principal you listed, you have created an unusable key that you also can't delete or modify — Terraform can't fix a policy it doesn't have permission to read. AWS's `bypass_policy_lockout_safety_check` defaults to `false` specifically to prevent this. The root statement is the escape hatch."
+
+- **STEP 6 — Single shared CMK vs per-service CMKs:** "Per-service CMKs are the textbook answer for blast-radius isolation — compromise the DynamoDB key, the S3 bucket is still safe. They cost $1/month per key, so three services = $3/month plus key-policy duplication. For a personal dev project, $1 single shared key is the right trade. In a regulated production deployment — PCI, SOC2, HIPAA — the right call flips: per-service CMKs with tighter policies, possibly per-table or per-bucket, justified by the audit and isolation requirements."
 - **STEP 8 (reusable Lambda module — why module vs inline):** _[fill in during STEP 8]_
 - **STEP 15 (Step Functions over chained Lambdas):** _[fill in during STEP 15]_

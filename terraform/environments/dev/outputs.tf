@@ -72,3 +72,36 @@ output "sns_email_subscription_arn" {
   description = "ARN of the email subscription. Stays 'pending confirmation' until the recipient clicks the AWS confirmation link."
   value       = module.sns.email_subscription_arn
 }
+
+# -----------------------------------------------------------------------------
+# Lambda outputs (STEP 9)
+# -----------------------------------------------------------------------------
+output "lambda_function_arns" {
+  description = "ARNs of all 4 CloudGuard Lambda functions. Consumed by Step Functions (STEP 16) and EventBridge (STEP 17)."
+  value = {
+    cost_scanner     = module.cost_scanner.function_arn
+    security_scanner = module.security_scanner.function_arn
+    resource_cleanup = module.resource_cleanup.function_arn
+    report_generator = module.report_generator.function_arn
+  }
+}
+
+output "lambda_function_names" {
+  description = "Names of all 4 CloudGuard Lambda functions."
+  value = {
+    cost_scanner     = module.cost_scanner.function_name
+    security_scanner = module.security_scanner.function_name
+    resource_cleanup = module.resource_cleanup.function_name
+    report_generator = module.report_generator.function_name
+  }
+}
+
+output "lambda_log_group_names" {
+  description = "CloudWatch log group names for all 4 Lambdas (CMK-encrypted, 30-day retention)."
+  value = {
+    cost_scanner     = module.cost_scanner.log_group_name
+    security_scanner = module.security_scanner.log_group_name
+    resource_cleanup = module.resource_cleanup.log_group_name
+    report_generator = module.report_generator.log_group_name
+  }
+}

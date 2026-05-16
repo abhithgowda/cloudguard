@@ -1,10 +1,12 @@
 # =============================================================================
-# main.tf — KMS module (STEP 6)
+# main.tf — KMS module (STEP 6, extended in STEP 9)
 #
 # Single shared customer-managed KMS key (CMK) used for envelope encryption of:
 #   - DynamoDB tables (STEP 5, retrofitted here)
 #   - S3 reports bucket (STEP 7)
 #   - SNS alerts topic (STEP 8)
+#   - Lambda environment variables (STEP 9)
+#   - CloudWatch Log groups for Lambdas (STEP 9)
 #
 # Why a CMK over the AWS-managed aliases (aws/dynamodb, aws/s3, aws/sns):
 #   - We can write a key policy restricting WHO may Decrypt.
@@ -34,6 +36,20 @@ locals {
   via_dynamodb = "dynamodb.${data.aws_region.current.id}.amazonaws.com"
   via_s3       = "s3.${data.aws_region.current.id}.amazonaws.com"
   via_sns      = "sns.${data.aws_region.current.id}.amazonaws.com"
+  via_lambda   = "lambda.${data.aws_region.current.id}.amazonaws.com"
+
+  # CloudWatch Logs is granted by service principal (not by Lambda role +
+  # kms:ViaService), and scoped by EncryptionContext to ONLY the CloudGuard
+  # Lambda log groups in this env. Wildcard avoids the chicken-and-egg of
+  # needing each function name before the key policy is finalised.
+  cloudwatch_logs_principal = "logs.${data.aws_region.current.id}.amazonaws.com"
+  lambda_log_group_arn_pattern = format(
+    "arn:aws:logs:%s:%s:log-group:/aws/lambda/%s-%s-*",
+    data.aws_region.current.id,
+    data.aws_caller_identity.current.account_id,
+    var.project,
+    var.environment,
+  )
 }
 
 # =============================================================================
@@ -144,6 +160,74 @@ data "aws_iam_policy_document" "kms_key_policy" {
       test     = "StringEquals"
       variable = "kms:ViaService"
       values   = [local.via_sns]
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Lambdas → Lambda (env var encrypt-at-rest, STEP 9).
+  #
+  # When aws_lambda_function.kms_key_arn is set, Lambda encrypts the function's
+  # environment variables with this CMK. At cold start, Lambda assumes the
+  # execution role and calls Decrypt on our behalf — kms:ViaService = lambda...
+  # is the Condition that pins the call path to the Lambda service.
+  # ---------------------------------------------------------------------------
+  statement {
+    sid    = "AllowLambdasViaLambda"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = var.lambda_role_arns
+    }
+
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = [local.via_lambda]
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Logs → encrypt log groups (STEP 9).
+  #
+  # Different shape from the Lambda grants: the principal is the CloudWatch
+  # Logs service itself (not a Lambda role), because Logs handles the encrypt/
+  # decrypt internally when log events are written/read. Scoped by
+  # EncryptionContext to the CloudGuard log-group ARN pattern in this env so
+  # the grant cannot be repurposed by another team's log group landing in the
+  # same key.
+  # ---------------------------------------------------------------------------
+  statement {
+    sid    = "AllowCloudWatchLogsEncrypt"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = [local.cloudwatch_logs_principal]
+    }
+
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:Describe*",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = [local.lambda_log_group_arn_pattern]
     }
   }
 }

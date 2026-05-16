@@ -132,7 +132,7 @@
 - **Note (2026-05-15):** STEP 5 currently uses AWS-managed `aws/dynamodb` key. Per blueprint amendment 2026-05-15, a new STEP 6 (KMS CMK Module) has been inserted; the DynamoDB module will be retrofitted in that session to consume `module.kms.key_arn`.
 
 ### ✅ STEP 6 — Build the KMS CMK Module
-*Completed: 2026-05-16*
+*Completed: 2026-05-16 · Commit: `65381f0`*
 
 - **Files written:**
   - `terraform/modules/kms/main.tf` — 1 `aws_kms_key`, 1 `aws_kms_alias`, 1 `data "aws_iam_policy_document" "kms_key_policy"` with 4 statements

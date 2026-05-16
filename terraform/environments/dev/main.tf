@@ -1,7 +1,7 @@
 # =============================================================================
 # main.tf — Dev environment entry point
 #
-# Module calls are added progressively. Wired so far: iam, dynamodb, kms.
+# Module calls are added progressively. Wired so far: iam, kms, dynamodb, s3, sns.
 # =============================================================================
 
 provider "aws" {
@@ -87,6 +87,29 @@ module "s3" {
   project             = var.project
   reports_bucket_name = local.reports_bucket_name
   kms_key_arn         = module.kms.key_arn
+  lambda_role_arns = [
+    module.iam.cost_scanner_role_arn,
+    module.iam.security_scanner_role_arn,
+    module.iam.resource_cleanup_role_arn,
+    module.iam.report_generator_role_arn,
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# SNS module — single fan-out alerts topic, KMS-encrypted with the shared CMK
+# (STEP 8). The IAM module already grants the 4 Lambda roles sns:Publish on
+# `${project}-${env}-alerts` — this module's topic name matches that ARN.
+#
+# alert_email is declared in variables.tf (since STEP 3) and set in the
+# gitignored terraform.tfvars. AWS sends a confirmation email on apply; the
+# subscription stays pending until the recipient clicks the link.
+# -----------------------------------------------------------------------------
+module "sns" {
+  source      = "../../modules/sns"
+  environment = var.environment
+  project     = var.project
+  kms_key_arn = module.kms.key_arn
+  alert_email = var.alert_email
   lambda_role_arns = [
     module.iam.cost_scanner_role_arn,
     module.iam.security_scanner_role_arn,

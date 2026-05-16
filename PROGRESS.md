@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 8 (Build the SNS Terraform Module)
-- **Next up:** STEP 9 (Build the Lambda Terraform Module — reusable)
+- **Last completed STEP:** 9 (Build the Lambda Terraform Module — reusable)
+- **Next up:** STEP 10 (Write the Cost Scanner Lambda)
 - **Last updated:** 2026-05-16
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -232,7 +232,41 @@
 
 ---
 
-### ⬜ STEP 9 — Build the Lambda Terraform Module (Reusable)
+### ✅ STEP 9 — Build the Lambda Terraform Module (Reusable)
+*Completed: 2026-05-16 · Commit: `dc75eeb`*
+
+- **Files written:**
+  - `terraform/modules/lambda/main.tf` — `data "archive_file"` + `aws_cloudwatch_log_group` + `aws_lambda_function` with `tracing_config`, `kms_key_arn`, `reserved_concurrent_executions`, `dynamic "environment"` block
+  - `terraform/modules/lambda/variables.tf` — 14 inputs with type + range validation: `function_name` (regex), `project`, `environment`, `handler`, `runtime` (default `python3.12`), `role_arn`, `source_dir`, `environment_variables`, `timeout` (1–900, default 300), `memory_size` (128–10240 step 64, default 256), `layers`, `reserved_concurrent_executions` (default 5), `tracing_mode` (default `Active`), `kms_key_arn`, `log_retention_days` (default 30)
+  - `terraform/modules/lambda/outputs.tf` — `function_arn`, `function_name`, `function_invoke_arn`, `log_group_name`, `log_group_arn`, `source_code_hash`
+- **Files modified (KMS retrofit):**
+  - `terraform/modules/kms/main.tf` — added 2 statements to the key policy:
+    - `AllowLambdasViaLambda` — Lambda role ARNs get Encrypt/Decrypt/ReEncrypt*/GenerateDataKey*/DescribeKey scoped by `kms:ViaService = lambda.<region>.amazonaws.com` (env-var decrypt at cold start)
+    - `AllowCloudWatchLogsEncrypt` — Service principal `logs.<region>.amazonaws.com` gets the encrypt suite scoped by `kms:EncryptionContext:aws:logs:arn` to `arn:aws:logs:<region>:<account>:log-group:/aws/lambda/${project}-${env}-*`
+- **Files modified (dev wiring):**
+  - `terraform/environments/dev/main.tf` — 4 invocations of the reusable lambda module (cost_scanner, security_scanner, resource_cleanup, report_generator). Each receives its own role ARN, source_dir, env vars wired to DynamoDB/SNS/S3, and the shared CMK. `report_generator` gets `memory_size = 512`, `timeout = 600`. `resource_cleanup` env vars include `AUTO_REMEDIATE = "false"` as a safety rail.
+  - `terraform/environments/dev/outputs.tf` — added `lambda_function_arns`, `lambda_function_names`, `lambda_log_group_names` (each a map keyed by scanner)
+  - `.gitignore` — added `**/.builds/` for `archive_file` scratch dirs
+  - `terraform/environments/dev/.terraform.lock.hcl` — added `hashicorp/archive v2.8.0` (new provider dependency from `data "archive_file"`)
+- **Defaults baked into the module (all defensible interview answers):**
+  - `runtime = "python3.12"` — matches Lambda runtime (local is 3.13, known gap)
+  - `timeout = 300` (5 min), `memory_size = 256` MB — sane for boto3-only workloads
+  - `reserved_concurrent_executions = 5` — caps runaway-bill blast radius from a misfiring EventBridge schedule; -1 in caller would disable
+  - `tracing_mode = "Active"` — X-Ray on every invocation (free up to 100k traces/month; gives Step Functions per-Lambda timeline)
+  - `kms_key_arn` REQUIRED — env vars + log groups both encrypted with the shared CMK
+  - `log_retention_days = 30` — long enough to debug, short enough to be free
+- **Key decisions:**
+  - **Explicit `aws_cloudwatch_log_group` with `depends_on` on the function:** Lambda auto-creates a log group with NO retention and NO encryption on first invocation. If we don't declare it in Terraform, the first apply succeeds, the function runs, CW Logs auto-creates an unmanaged group, and the next apply fails trying to create a group that already exists. Declaring explicitly + `depends_on` on the function forces ordering: log group first (managed, encrypted, retained), function second.
+  - **`data "archive_file"` (zip at plan time) vs. a packaging script:** Blueprint STEP 9 says use `archive_file`; STEP 19 will add `scripts/package_lambdas.sh` for `pip install -r requirements.txt` bundling. Both can coexist — `archive_file` zips whatever's in `source_dir`. At STEP 19, the source_dir can point at a pre-populated `package/` folder. Module doesn't need to change.
+  - **`dynamic "environment"` block:** AWS only encrypts env vars with the CMK if at least one variable is set. Passing an empty map without the dynamic block creates an empty `environment {}` block, which AWS rejects. The dynamic block removes it entirely when there's nothing to inject.
+  - **KMS retrofit shape — Lambda env vars vs CloudWatch Logs are different statement structures:** Lambda env-var decrypt is the Lambda execution role calling Decrypt via the Lambda service → principal is the role ARN, condition is `kms:ViaService`. CloudWatch Logs encryption is the Logs service principal encrypting on its own → principal is `logs.<region>.amazonaws.com`, condition is `kms:EncryptionContext:aws:logs:arn` scoped to our log-group ARN pattern. Two separate Sids because the security models are genuinely different.
+  - **Log-group ARN pattern scoped to `${project}-${environment}-*` not `*`:** Without the EncryptionContext condition, the grant would let CloudWatch Logs encrypt ANY log group in the account with this key — including log groups outside CloudGuard. The pattern restricts the grant to log groups under `/aws/lambda/cloudguard-dev-*`. Defense-in-depth at the encryption-context layer.
+  - **`reserved_concurrent_executions = 5` default:** A bug in a Lambda + EventBridge retry loop has bankrupted real teams. Capping at 5 means even a runaway scheduler can't spawn 1000 concurrent executions burning Cost Explorer API quota. Caller can raise per-function if needed; the safety rail is "deny by default."
+  - **`AUTO_REMEDIATE = "false"` env var on resource_cleanup:** The cleanup Lambda has `ec2:DeleteVolume` + `ec2:ReleaseAddress` — destructive perms. Default false means STEP 12 code will scan and log findings but NOT delete unless overridden (by Step Functions input later). Same belt-and-braces logic as the bucket-policy enumerations: code defaults to safe; explicit action required to enable destruction.
+  - **`report_generator` gets 512 MB / 600 s** (vs 256 / 300 default): HTML generation + DynamoDB Scan + S3 PutObject runs on a daily/weekly schedule and shouldn't get timed out mid-report. CPU in Lambda is proportional to memory; 512 MB also speeds up Python startup and the templating loop.
+  - **`hashicorp/archive` provider:** New dependency introduced by `data "archive_file"`. `terraform init -upgrade` fetched v2.8.0, lock file updated and committed.
+- **`terraform plan` result:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — 33 prior + 4 `aws_lambda_function` + 4 `aws_cloudwatch_log_group`. No apply (blueprint defers apply to STEP 18).
+
 ### ⬜ STEP 10 — Write the Cost Scanner Lambda
 ### ⬜ STEP 11 — Write the Security Scanner Lambda
 ### ⬜ STEP 12 — Write the Resource Cleanup Lambda
@@ -288,6 +322,14 @@
 | 2026-05-16 | Email-only alert subscription for STEP 8; Slack deferred | Slack drags Secrets Manager (not yet built) and an HTTPS subscription with retry/dead-letter policy into a STEP scoped to SNS. Defer until alert volume justifies the channel | Add Slack subscription now — would close the open TODO but bloat STEP 8's blast radius and force a Secrets Manager mini-STEP |
 | 2026-05-16 | SNS topic policy enumerates 4 Lambda role ARNs as Publish principals | Defense-in-depth: identity-policy AND resource-policy must both Allow. Leaked credential outside those 4 roles is rejected at the topic. Audit is one `cat` away | `Principal = "*"` + `aws:PrincipalArn` Condition — equally secure but reads worse and obscures the audit |
 | 2026-05-16 | Email regex validation on `alert_email` variable at the module boundary | Fails at `plan` time instead of `apply` time when AWS rejects malformed endpoints — tightens the feedback loop | No validation — Terraform accepts the value and AWS errors during apply, costing a round trip |
+| 2026-05-16 | Lambda module — declare `aws_cloudwatch_log_group` explicitly with `depends_on` on the function | Lambda auto-creates a log group with no retention and no encryption on first invocation; explicit declaration is the only way to set retention + KMS, and the dependency ordering prevents a "log group already exists" failure on the second apply | Let Lambda auto-create the log group — fails our encryption requirement and our 30-day retention requirement |
+| 2026-05-16 | Default `reserved_concurrent_executions = 5` on every Lambda | A misfiring EventBridge schedule + retry loop is the textbook runaway-bill scenario for serverless; capping concurrency is cheap insurance. Caller can raise per-function | Unbounded (Lambda default) — works fine until it doesn't; the cost of being wrong is real money |
+| 2026-05-16 | X-Ray active tracing on by default | Free up to 100k traces/month; gives Step Functions execution graphs a per-Lambda timeline; trivial to demo in interview | `PassThrough` (only trace when called from a traced upstream) — saves nothing since we're under the free tier and lose visibility |
+| 2026-05-16 | Encrypt Lambda env vars AND CloudWatch log groups with the shared CMK | Env vars often hold table names + topic ARNs which are not secrets but ARE infrastructure intel; log groups can leak request payloads. Both at-rest with the CMK = same audit/rotation/revocation story as DynamoDB/S3/SNS. Required two new statements in the KMS policy (different shapes for the Lambda role grant vs the CW Logs service grant) | Leave Lambda env vars + log groups on the AWS-managed default — works, costs nothing, but breaks the "everything under one auditable CMK" story that's the whole point of STEP 6 |
+| 2026-05-16 | CloudWatch Logs grant in KMS policy scoped by `kms:EncryptionContext:aws:logs:arn` ArnLike pattern | Without the EncryptionContext condition, the grant lets CloudWatch Logs encrypt any log group in the account with our CMK. Restricting to `/aws/lambda/${project}-${env}-*` keeps the grant scoped to CloudGuard's Lambdas only | No EncryptionContext condition — works, but the grant is overly broad; same shape Checkov would flag |
+| 2026-05-16 | `data "archive_file"` in the module (not a packaging-script-only flow) | Blueprint STEP 9 spec; gives Terraform a `source_code_hash` driver so code changes flow into plans without manual zip steps; coexists with the STEP 19 packaging script which can pre-populate a `package/` source_dir | Skip archive_file, rely entirely on the STEP 19 bash script — works but Terraform can't tell when code changed and won't update the function on `apply` unless the script ran first |
+| 2026-05-16 | `dynamic "environment"` block on `aws_lambda_function` | AWS rejects an empty `environment {}` block; passing an empty map to a static block would error. Dynamic block omits the block entirely when no env vars | Always emit the block — fails for functions that legitimately have no env vars |
+| 2026-05-16 | `AUTO_REMEDIATE = "false"` env var on resource_cleanup Lambda | Cleanup role has `ec2:DeleteVolume`/`ec2:ReleaseAddress` — destructive. Defaulting to dry-run mode means the function will scan and log findings but NOT delete until an explicit override (Step Functions input later) flips it. Belt-and-braces with the role-level Condition TODO | Default to true — IAM allows it, role is built for it. Rejected: a code bug shouldn't be able to release every EIP in the account. |
 
 ---
 
@@ -363,5 +405,17 @@
 
 - **STEP 8 — KMS encryption on SNS and how it links to STEP 6:** "Topic-level SSE-KMS encrypts message bodies at rest. The shared CMK from STEP 6 already had `AllowLambdasViaSNS` Sid with `kms:ViaService = sns.<region>.amazonaws.com` — written ahead of time exactly so STEP 8 wouldn't need to touch the KMS policy. When a Lambda calls `sns:Publish`, SNS calls `kms:GenerateDataKey` on the CMK *on the Lambda's behalf* — the `kms:ViaService` Condition checks that the call's `userAgent`-equivalent path goes through SNS, so a leaked Lambda credential can't directly call `kms:Encrypt` outside the SNS path."
 
-- **STEP 9 (reusable Lambda module — why module vs inline):** _[fill in during STEP 9]_
+- **STEP 9 — Why a reusable Lambda module instead of 4 inline blocks:** "Four functions, same shape: a zip, a log group, the function itself, identical IAM/KMS wiring. Inlining means changing five things in five places when (not if) we add tracing, change retention, or rotate to a new runtime. A module makes 'add a Lambda' a 10-line call. The other reason is testability — a module's variables.tf is a typed interface, with regex validation on function_name and range validation on memory_size, so a typo at the call site fails at `terraform plan` instead of `terraform apply`."
+
+- **STEP 9 — Why declare the CloudWatch log group in Terraform when Lambda auto-creates one:** "Lambda's auto-created log group has the worst defaults possible: no retention (logs live forever, billing forever) and no encryption (CloudWatch's default key, not yours). If you declare the log group explicitly with `retention_in_days = 30` and `kms_key_id = <CMK>`, you control both. The catch is ordering — if the function runs first, the auto-created group already exists and your Terraform resource conflicts with it. The fix is `depends_on = [aws_cloudwatch_log_group.lambda]` on the function — log group created first, function second, no race."
+
+- **STEP 9 — `reserved_concurrent_executions` and why default to a low cap:** "Lambda's default is unbounded concurrency up to the account limit (1000+). A bug in an EventBridge schedule retry loop — say a Lambda that fails fast and triggers a `States.ALL` retry every second — can spawn hundreds of concurrent executions burning Cost Explorer API quota and writing to DynamoDB at full PAY_PER_REQUEST cost. Capping at 5 by default means the worst case is bounded to 5 concurrent executions per function. Production functions that legitimately need more concurrency can override; the safety rail is 'deny by default, raise on demand.'"
+
+- **STEP 9 — X-Ray active tracing trade-off:** "Active tracing samples every invocation and emits trace segments to X-Ray. Free up to 100k traces/month — for a system that scans every 6 hours, that's roughly 4 scans × 4 Lambdas × 30 days = 480 traces a month, two orders of magnitude under the free tier. The benefit in the interview demo is the Step Functions execution graph: you click a parallel branch and see Cost Explorer pagination took 800ms, DynamoDB BatchWrite took 200ms — a real per-Lambda timeline. PassThrough only traces when called from a traced upstream — for ad-hoc invocations or initial development that's a worse default."
+
+- **STEP 9 — Encrypting Lambda env vars + log groups with the same CMK as DynamoDB/S3/SNS:** "Env vars carry table names, topic ARNs, bucket names — not secrets, but infrastructure intel that an attacker reading them learns the shape of your data plane from. Log groups carry request payloads, AWS API responses, and sometimes accidental PII from misconfigured logging. Both go to the shared CMK so they sit under the same audit/rotation/revocation story as the data tables. Disable the CMK and the entire stack is read-protected as one unit — that's the architectural invariant STEP 6 was set up to give us."
+
+- **STEP 9 — Two different KMS policy statement shapes for Lambda vs CloudWatch Logs:** "Lambda env-var decrypt is the function's execution role calling Decrypt via the Lambda service — so the principal is the role ARN and the Condition is `kms:ViaService = lambda.<region>.amazonaws.com`. CloudWatch Logs encryption is the Logs service principal doing its own encrypt on log events — the principal is `logs.<region>.amazonaws.com` and the Condition is `kms:EncryptionContext:aws:logs:arn` matching the log group ARN. Two statements, two different security models, both expressing 'this key can only be used by THIS service for THESE resources.'"
+
+- **STEP 9 — Why dry-run-by-default on the resource cleanup Lambda:** "The cleanup role has `ec2:DeleteVolume` and `ec2:ReleaseAddress` — anything wrong with the scan logic could release every EIP and delete every available EBS volume in the account. The IAM hardening TODO is to scope those actions with a `Condition: ec2:ResourceTag/AutoCleanup = true`, but that requires tagging discipline we don't have yet. In the meantime: `AUTO_REMEDIATE = false` env var. Code scans, logs findings, sends SNS alerts — but doesn't actually delete. Step Functions input later can flip the flag to enable destruction once we trust the detection logic. Same defense pattern as the `Deny aws:SecureTransport = false` on S3: rely on multiple independent gates, default to safe."
 - **STEP 16 (Step Functions over chained Lambdas):** _[fill in during STEP 16]_

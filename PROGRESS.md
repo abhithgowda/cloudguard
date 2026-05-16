@@ -203,7 +203,7 @@
 - **`terraform plan` result:** ✅ `Plan: 30 to add, 0 to change, 0 to destroy.` — 12 IAM (STEP 4, now with `reports_bucket_arn` input) + 3 DynamoDB (STEP 5) + 2 KMS (STEP 6) + 13 S3 (this STEP). No apply (blueprint defers apply to STEP 18).
 
 ### ✅ STEP 8 — Build the SNS Terraform Module
-*Completed: 2026-05-16 · Commit: `<TBD>`*
+*Completed: 2026-05-16 · Commit: `a01bf04`*
 
 - **Files written:**
   - `terraform/modules/sns/main.tf` — 1 `aws_sns_topic` (KMS-encrypted), 1 `aws_sns_topic_subscription` (email), 1 `aws_sns_topic_policy` from an `aws_iam_policy_document` with 3 statements

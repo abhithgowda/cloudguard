@@ -330,7 +330,7 @@
   - Imports + handler load verified under the venv.
 
 ### ✅ STEP 12 — Write the Resource Cleanup Lambda
-*Completed: 2026-05-17 · Commit: `<pending>`*
+*Completed: 2026-05-17 · Commit: `dfa147a`*
 
 - **Files written:**
   - `src/resource_cleanup/zombie_finder.py` — three pure helpers (`find_zombie_ebs_volumes`, `find_unused_elastic_ips`, `find_old_snapshots`) taking an `ec2_client` parameter. Hardcoded ap-south-1 pricing constants (`EBS_PRICE_PER_GB_MONTH` map, `EIP_MONTHLY_COST_USD = 3.65`, `SNAPSHOT_PRICE_PER_GB_MONTH = 0.05`) with a documented effective date.

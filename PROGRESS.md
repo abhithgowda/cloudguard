@@ -296,7 +296,7 @@
 
 
 ### ✅ STEP 11 — Write the Security Scanner Lambda
-*Completed: 2026-05-17 · Commits: `c16a9e2` (main), `<pending>` (config_checker hotfix)*
+*Completed: 2026-05-17 · Commits: `c16a9e2` (main), `c6c9ea8` (config_checker hotfix)*
 
 - **Files written:**
   - `src/security_scanner/handler.py` — Lambda entrypoint. Reads `FINDINGS_TABLE` env var, initializes ec2/s3/iam/dynamodb clients, calls all 4 checkers, stamps `finding_id`/`timestamp`/`expires_at`, batch-writes to DynamoDB. Returns `{total_findings, by_severity, by_check}`.

@@ -218,8 +218,9 @@ resource "aws_iam_role_policy_attachment" "security_scanner_basic" {
 # Role 3: Resource Cleanup
 # Describes + DELETES zombie EBS volumes/EIPs; publishes SNS notifications.
 #
-# WARNING: this role has destructive permissions (DeleteVolume, ReleaseAddress).
-# In a hardened production setup, scope these with a Condition on a tag like:
+# WARNING: this role has destructive permissions (DeleteVolume, ReleaseAddress,
+# DeleteSnapshot). In a hardened production setup, scope these with a Condition
+# on a tag like:
 #   "ec2:ResourceTag/AutoCleanup": "true"
 # That way the cleanup function can only delete resources explicitly marked
 # for cleanup. Hardening TODO — see PROGRESS.md.
@@ -249,11 +250,14 @@ resource "aws_iam_role_policy" "resource_cleanup" {
       },
       {
         # Destructive — see warning at top of this block.
+        # DeleteSnapshot added in STEP 12 for the snapshot-cleanup auto-
+        # remediate path; same Resource="*" + tag-Condition hardening TODO.
         Sid    = "EC2ZombieDelete"
         Effect = "Allow"
         Action = [
           "ec2:DeleteVolume",
-          "ec2:ReleaseAddress"
+          "ec2:ReleaseAddress",
+          "ec2:DeleteSnapshot"
         ]
         Resource = "*"
       },

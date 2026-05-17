@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 11 (Write the Security Scanner Lambda)
-- **Next up:** STEP 12 (Write the Resource Cleanup Lambda)
+- **Last completed STEP:** 12 (Write the Resource Cleanup Lambda)
+- **Next up:** STEP 13 (Write the Report Generator Lambda)
 - **Last updated:** 2026-05-17
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -329,7 +329,45 @@
   - `terraform plan` → `Plan: 41 to add, 0 to change, 0 to destroy.` (unchanged shape — nothing applied yet).
   - Imports + handler load verified under the venv.
 
-### ⬜ STEP 12 — Write the Resource Cleanup Lambda
+### ✅ STEP 12 — Write the Resource Cleanup Lambda
+*Completed: 2026-05-17 · Commit: `<pending>`*
+
+- **Files written:**
+  - `src/resource_cleanup/zombie_finder.py` — three pure helpers (`find_zombie_ebs_volumes`, `find_unused_elastic_ips`, `find_old_snapshots`) taking an `ec2_client` parameter. Hardcoded ap-south-1 pricing constants (`EBS_PRICE_PER_GB_MONTH` map, `EIP_MONTHLY_COST_USD = 3.65`, `SNAPSHOT_PRICE_PER_GB_MONTH = 0.05`) with a documented effective date.
+  - `src/resource_cleanup/handler.py` — Lambda entrypoint. Reads `FINDINGS_TABLE`, `REMEDIATION_LOG_TABLE`, `AUTO_REMEDIATE`, `SNAPSHOT_AGE_DAYS`, `ENVIRONMENT`, `LOG_LEVEL`. Stamps finding_id/timestamp/expires_at, batch-writes findings, runs remediation (or dry-run record) per resource type, batch-writes remediation log. Returns `{volumes_found, eips_found, snapshots_found, findings_written, estimated_monthly_savings_usd, auto_remediate_armed, remediations: {success, failed, skipped_dry_run}}`.
+  - `src/resource_cleanup/requirements.txt` — `boto3` only.
+- **Files modified (IAM retrofit):**
+  - `terraform/modules/iam/main.tf` — `resource_cleanup` role's `EC2ZombieDelete` Sid extended with `ec2:DeleteSnapshot` (was just `DeleteVolume` + `ReleaseAddress`). Updated the WARNING comment at the top of the block to list all three destructive actions.
+- **Severity ladder (cleanup category, by estimated monthly $ waste):**
+  - `>= $50/mo` → HIGH
+  - `>= $10/mo` → MEDIUM
+  - else → LOW
+- **Auto-remediate gating — two independent gates, both must opt in:**
+  1. Env var `AUTO_REMEDIATE == "true"` (per-env hard stop; dev tfvars wires this to `"false"`)
+  2. Event input `auto_remediate: true` (per-invocation flag; Step Functions/EventBridge can override)
+  When either gate is false the run is dry-run and every action is logged as `SKIPPED_DRY_RUN` in the remediation log so the operator can see what *would* have happened.
+- **Remediation log records:** `remediation_id` (uuid), `timestamp`, `resource_id`, `resource_type`, `action` (one of `delete_volume`/`release_address`/`delete_snapshot`), `status` (`SUCCESS`/`FAILED`/`SKIPPED_DRY_RUN`), `linked_finding_id`, `environment`, `error_message` (only when FAILED). PK is `remediation_id`, SK is `timestamp`, GSI on `status` (from STEP 5) supports "show me everything that failed in the last 24h" queries.
+- **Key decisions:**
+  - **Pure helpers (zombie_finder.py) + thin handler (handler.py):** same shape as cost_scanner + security_scanner. Helpers take a boto3 client param — STEP 15 will mock with `unittest.mock.Mock()` and assert on call args without an AWS round trip. Handler owns env vars, stamping, batch-writes, and the auto-remediate gate.
+  - **Two-gate auto-remediate (event AND env, both must opt-in):** the event flag is the per-invocation switch (Step Functions input passes it for manual runs), the env var is the per-environment hard stop (dev `"false"`, prod `"true"` only after detection logic is trusted). One gate is not enough — a buggy event payload shouldn't be able to arm production, and a misconfigured env var shouldn't auto-remediate on every scheduled scan. Belt and braces.
+  - **Dry-run records still written to the remediation log:** the operator wants to see "we would have deleted vol-X today" — that's the value of dry-run, not just silence. `SKIPPED_DRY_RUN` status is GSI-queryable from STEP 5.
+  - **Hardcoded ap-south-1 pricing constants vs the AWS Pricing API:** Pricing API is us-east-1-only, requires an extra IAM grant + ~500ms per call. Volume pricing changes a few times per year — documented constants with an effective-date comment are auditable in CloudWatch logs and easy to update. Revisit if multi-region scanning is added.
+  - **IAM retrofit added `ec2:DeleteSnapshot`:** Blueprint STEP 4 spec for the cleanup role lists `DeleteVolume` + `ReleaseAddress` but not `DeleteSnapshot`. STEP 12 needs it because the orchestrator handles snapshot remediation; leaving it out would make the auto-remediate path for snapshots silently fail. Same pattern as the STEP 11 IAM retrofit for `ec2:DescribeVolumes`. Scoped with the same `Resource = "*"` + tag-Condition hardening TODO as the other two destructive actions.
+  - **Archive-tier snapshots skipped from cost estimates:** Archive snapshots have a different pricing model ($0.0125/GB-month vs $0.05/GB-month) and the `describe_snapshots` payload exposes the tier only sometimes. Skipping them is honest about the API limit — the rare Archive snapshot won't appear, but the standard-tier snapshots that dominate dev accounts will. Open TODO to add Archive-tier scanning when a Pricing API integration lands.
+  - **`SNAPSHOT_AGE_DAYS` env var (default 180) instead of a hardcoded threshold:** lets a Step Functions input override the cutoff per-environment without a code change. Useful when prod has stricter retention policies than dev.
+  - **`ClientError` caught around each delete call, but not the describe calls:** A `delete_volume` that fails (e.g. volume re-attached between scan and delete) shouldn't kill the batch — log the failure to the remediation table, move on. Describe failures already get logged as exceptions in the existing logging path and should surface — those are real bugs, not race conditions.
+  - **`LOG_LEVEL` env var (default INFO) on the handler logger:** consistent with the STEP 9 module-level env var. Lets prod drop to WARNING if CloudWatch costs go up.
+- **`terraform plan` result:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — same total as STEP 11 (the IAM retrofit only mutates JSON inside a not-yet-created inline policy; no new resources). No apply (blueprint defers to STEP 18).
+- **Local smoke test:** Synthetic-data run via `unittest.mock`:
+  - EBS volumes: 100 GB gp3 → LOW @ $9.12/mo; 600 GB io1 → HIGH @ $85.20/mo ✅
+  - EIPs: 1 unattached found, 1 attached correctly skipped ✅
+  - Snapshots: only old standard-tier flagged (MEDIUM @ $25); new + archive tier correctly skipped ✅
+  - Auto-remediate gating: armed only when both env var AND event flag are true ✅
+- **Open TODO (carried + new):**
+  - Scope `ec2:DeleteVolume` / `ec2:ReleaseAddress` / `ec2:DeleteSnapshot` with Condition on tag `ec2:ResourceTag/AutoCleanup = true` (NEW: snapshot added to the tag-Condition surface).
+  - Scope `ses:SendEmail` to verified-identity ARN.
+  - Replace hardcoded ap-south-1 pricing constants with AWS Pricing API integration when multi-region scanning is added.
+
 ### ⬜ STEP 13 — Write the Report Generator Lambda
 ### ⬜ STEP 14 — Write the Shared Utilities
 ### ⬜ STEP 15 — Write Unit Tests
@@ -402,6 +440,12 @@
 | 2026-05-17 | STEP 11 hotfix — implemented `config_checker.py` (was left empty after main commit; user caught it in-session) | Blueprint section 5 lists the file but STEP 11 spec ignores it. IAM grant for `config:GetComplianceDetailsByConfigRule` was already in place from STEP 4, so the intent is clear. Building it (a) uses the IAM grant, (b) adds AWS Config + Security Hub coverage that's a 12-LPA interview must-know, (c) closes a real gap in the security scanner. Cost: 1 file + 1 additional IAM action (`DescribeComplianceByConfigRule`) | (a) Delete file + remove the IAM Config grant — least-privilege win but loses the interview-grade coverage. (b) Leave empty stub — would have been caught again at STEP 15 unit-test time |
 | 2026-05-17 | Config checker: graceful no-op if AWS Config isn't enabled (catch NoSuchConfigurationRecorder + AccessDenied) | Most dev accounts don't enable Config (it costs ~$0.003/item recorded, can hit hundreds of dollars in a busy account); without the try/except, every scheduled scan in dev would fail loudly on this check. Catching the specific error codes preserves diagnostic signal — anything else still raises | Always raise — would fail every scan in dev/free-tier accounts. Always swallow all errors — would hide real misconfigurations |
 | 2026-05-17 | Config severity = MEDIUM default with CRITICAL_RULES + HIGH_RULES sets for well-known managed rules | The Config API does not carry per-rule criticality — root-mfa-enabled and s3-bucket-logging-enabled both return the same payload. Marking everything MEDIUM is honest about the API limit but lets specific high-stakes rules (root MFA, public S3, encrypted volumes, VPC flow logs) be promoted explicitly | Mark everything as HIGH — alert fatigue, no signal-to-noise; pull rule criticality from Security Hub — better but adds another service dependency that this STEP doesn't scope |
+| 2026-05-17 | Resource cleanup: two-gate auto-remediate (env var AND event flag, both must opt in) | Single-gate auto-remediate has bankrupted real teams via a buggy event payload or a misconfigured env var. Both gates means a Step Functions input that accidentally arms remediation can't fire in dev (env var still false), and a prod env var flipped to true won't run on every scheduled scan (EventBridge omits the event flag). Manual remediation is intentional, always | One gate — either works, but doubles the blast radius of a single misconfig; no gating — never sane for a role that holds DeleteVolume/ReleaseAddress/DeleteSnapshot |
+| 2026-05-17 | Cleanup severity ladder by estimated monthly cost ($50 HIGH / $10 MEDIUM / else LOW), not by resource count or age | A 1 TB orphaned io1 volume ($142/mo) deserves a different page than a 10 GB gp3 volume ($0.91/mo) — they're both "available" but one is 150x more expensive. Cost-based severity matches what an on-call engineer actually cares about: the total bill, not the resource count | Count-based — would treat 100 small volumes the same as 1 huge one; age-based — would page on a long-idle but cheap resource and miss a recently-stranded expensive one |
+| 2026-05-17 | Hardcoded ap-south-1 EBS/EIP/snapshot pricing constants vs the AWS Pricing API | Pricing API is us-east-1-endpoint-only (needs an extra IAM grant + region pin), adds ~500ms per call, and the prices change a few times per year at most. Documented constants with an effective date are auditable in CloudWatch logs and trivially updated | AWS Pricing API — better long term and required for multi-region scanning, but premature for an ap-south-1-only dev environment; pull from Cost Explorer — wrong API surface (CE is historical actuals, not list price) |
+| 2026-05-17 | Dry-run remediation attempts still written to the remediation log as `SKIPPED_DRY_RUN` | The operator wants to see "we would have deleted vol-X today" — that's the value of dry-run, not silence. The STEP 5 `status-index` GSI lets a future ops dashboard query exactly the would-have-been-deleted set without a table scan | Write only successful/failed remediations — saves writes but hides what the system intended to do; would force engineers to read CloudWatch logs to see scan intent |
+| 2026-05-17 | Snapshot age threshold as `SNAPSHOT_AGE_DAYS` env var (default 180), not a constant | Different environments want different retention policies — dev might purge at 30 days, prod might keep 365. Making it an env var means Step Functions input can override per-invocation without a code change | Hardcoded 180 — works for dev but loses the tunability; pull threshold from a Parameter Store value — overkill for a single tunable |
+| 2026-05-17 | IAM retrofit added `ec2:DeleteSnapshot` to cleanup role (beyond literal STEP 4 spec) | Blueprint STEP 4 specifies `DeleteVolume` + `ReleaseAddress` for cleanup but STEP 12's `lambda_handler` and the section-4 spec both list snapshots as a remediation target. Without `DeleteSnapshot` the auto-remediate path for snapshots would silently fail at AWS. Same gap-fill pattern as STEP 11's EBS check + `ec2:DescribeVolumes` retrofit | Leave it out and keep snapshots detect-only — half-finished feature; harder for a future reader to discover the missing grant than to look at this row of the decision log |
 
 ---
 
@@ -423,7 +467,7 @@
 - [ ] Decide Slack vs email-only for alerts (Slack webhook stored in Secrets Manager if used)
 - [ ] Confirm free tier limits before STEP 18 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month; KMS CMK = $1/month (not free tier)
 - [x] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` — done in STEP 6 (2026-05-16)
-- [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true`
+- [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress`/`ec2:DeleteSnapshot` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true` (STEP 12 added DeleteSnapshot to this list)
 - [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
 
 ---
@@ -511,5 +555,15 @@
 - **STEP 11 hotfix — The graceful no-op pattern:** "AWS Config has to be explicitly enabled (it's an opt-in service with per-item recording cost), and most dev accounts don't have it on. If my Lambda just called `describe_compliance_by_config_rule` blindly, every scheduled scan in dev would fail with `NoSuchConfigurationRecorderException`. The fix is to catch that specific error code and return an empty list — the scan moves on, the four other checkers still run, no false alarms in CloudWatch. I also catch `AccessDeniedException` because Config has region-specific availability quirks. Anything outside that allowlist still raises — I want to know if it's a permissions bug, not Config-not-enabled."
 
 - **STEP 11 hotfix — Why MEDIUM-default severity with rule-specific overrides:** "AWS Config's API surfaces compliance state but not severity — `root-account-mfa-enabled` failing and `s3-bucket-logging-enabled` failing return the same payload shape. Marking everything HIGH causes alert fatigue and your on-call engineer learns to ignore the channel; marking everything LOW means a critical control like 'root has MFA' gets buried. I default to MEDIUM and maintain a `CRITICAL_RULES` set (root MFA, public S3 read/write, root access keys) and a `HIGH_RULES` set (EBS encryption, RDS encryption, VPC flow logs, IAM password policy) — well-known managed rules that map to PCI/SOC2/CIS controls. As you onboard more rules in production you'd grow those sets. The right long-term answer is to pipe findings into Security Hub which has a normalized severity model, but that's an extension, not STEP 11 scope."
+
+- **STEP 12 — Why two-gate auto-remediate (env var AND event flag):** "The cleanup Lambda holds three destructive permissions: DeleteVolume, ReleaseAddress, DeleteSnapshot. A single gate — say only checking an event flag — means one buggy Step Functions input can release every Elastic IP in the account. A single env-var gate means the moment we flip prod's `AUTO_REMEDIATE` to true, every scheduled EventBridge scan auto-deletes. Two gates: env var is the per-environment hard stop (dev stays false forever, prod only flips after we trust the detection), event flag is the per-invocation switch (manual Step Functions runs pass it when destruction is intended). Either gate alone is unsafe. Both required = the only invocation path that actually destroys is a manual run, in an environment that explicitly opts in, with an explicit per-invocation override. That's the same defense-in-depth pattern as `Deny aws:SecureTransport=false` on S3 — rely on multiple independent gates, default to safe."
+
+- **STEP 12 — Why cost-based severity ladder for cleanup findings:** "A 1 TB orphaned io1 volume costs $142 a month. A 10 GB gp3 volume costs 91 cents. They're both `status=available`, both technically zombie resources, but they're 150x different in actual impact. If I severity-rate by resource count or by 'has it been orphaned for X days,' the on-call engineer gets paged equally for both — that's alert fatigue. By rating on estimated monthly waste — ≥$50/mo HIGH, ≥$10/mo MEDIUM, else LOW — the high-priority queue only contains things that actually matter to the AWS bill. It also lines up with how a manager would prioritize: 'show me what's costing us money,' not 'show me what's old.'"
+
+- **STEP 12 — Why hardcoded pricing constants over the AWS Pricing API:** "The Pricing API is a us-east-1-only endpoint — every other-region Lambda has to make a cross-region call. It needs `pricing:GetProducts` in IAM, costs ~500ms per call, and the response is deeply nested JSON you have to walk to find the per-GB rate. EBS list prices change three or four times a year. For ap-south-1, today, hardcoded constants with an `effective 2026-05` comment is auditable in CloudWatch logs and trivially correctable when AWS updates the price page. When multi-region scanning lands (open TODO), we'll need the Pricing API — at that point one cold-start call per region per scan is acceptable. Today, it would be premature complexity."
+
+- **STEP 12 — Why dry-run remediations still write to the remediation log:** "Dry-run is the operator's preview. If I just don't write to the log when AUTO_REMEDIATE is off, the operator has to read CloudWatch Logs to figure out what the scanner *would* have done — that's not a workflow you can build a dashboard on. By writing every dry-run as `status=SKIPPED_DRY_RUN` to the same remediation log table, the on-call engineer can query the STEP 5 `status-index` GSI for 'show me everything we'd have deleted in the last 24h' and decide whether to flip the gate. The data model treats dry-run as a first-class outcome, not an absence of outcome."
+
+- **STEP 13 (Report Generator):** _[fill in during STEP 13]_
 
 - **STEP 16 (Step Functions over chained Lambdas):** _[fill in during STEP 16]_

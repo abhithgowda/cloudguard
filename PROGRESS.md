@@ -268,7 +268,7 @@
 - **`terraform plan` result:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — 33 prior + 4 `aws_lambda_function` + 4 `aws_cloudwatch_log_group`. No apply (blueprint defers apply to STEP 18).
 
 ### ✅ STEP 10 — Write the Cost Scanner Lambda
-*Completed: 2026-05-17 · Commit: `<pending>`*
+*Completed: 2026-05-17 · Commit: `fbdd001`*
 
 - **Files written:**
   - `src/cost_scanner/handler.py` — Lambda entrypoint. Reads `FINDINGS_TABLE`, `COST_DATA_TABLE`, `ENVIRONMENT` env vars (wired in STEP 9). Calls `get_cost_data` → `store_cost_data` → `detect_anomalies` → `store_findings`. Returns `{anomalies_found, total_daily_cost, services_scanned}`.

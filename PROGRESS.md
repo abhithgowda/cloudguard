@@ -7,8 +7,8 @@
 
 ## Current Status
 
-- **Last completed STEP:** 10 (Write the Cost Scanner Lambda)
-- **Next up:** STEP 11 (Write the Security Scanner Lambda)
+- **Last completed STEP:** 11 (Write the Security Scanner Lambda)
+- **Next up:** STEP 12 (Write the Resource Cleanup Lambda)
 - **Last updated:** 2026-05-17
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
@@ -295,6 +295,32 @@
 - **Known gap — local Python 3.13 vs Lambda 3.12:** carried forward from STEP 1. Code uses no 3.13-only syntax. Will validate via Lambda runtime on the first STEP 18 apply.
 
 
+### ✅ STEP 11 — Write the Security Scanner Lambda
+*Completed: 2026-05-17 · Commit: `<pending>`*
+
+- **Files written:**
+  - `src/security_scanner/handler.py` — Lambda entrypoint. Reads `FINDINGS_TABLE` env var, initializes ec2/s3/iam/dynamodb clients, calls all 4 checkers, stamps `finding_id`/`timestamp`/`expires_at`, batch-writes to DynamoDB. Returns `{total_findings, by_severity, by_check}`.
+  - `src/security_scanner/sg_checker.py` — `check_security_groups(ec2_client)`. Severity ladder: `0.0.0.0/0` on all-traffic or SSH(22)/RDP(3389) → CRITICAL; on any other non-80/443 port → HIGH; on 80/443 → skipped (legitimate web). Handles IPv6 `::/0` and the all-protocol sentinel (`IpProtocol = "-1"`).
+  - `src/security_scanner/s3_checker.py` — `check_s3_buckets(s3_client)`. 4 sub-checks per bucket: public access block disabled (HIGH), no default encryption (HIGH), `Principal = "*"` in policy (CRITICAL), versioning disabled (LOW). Each per-bucket API wrapped in try/except so one bad bucket can't kill the scan.
+  - `src/security_scanner/iam_checker.py` — `check_iam_users(iam_client)`. Per user: access keys > 90d old (MEDIUM), keys unused 90+ days (MEDIUM), no MFA (HIGH), AdministratorAccess attached directly (HIGH).
+  - `src/security_scanner/ebs_checker.py` — `check_ebs_encryption(ec2_client)`. **Added beyond literal blueprint spec** — STEP 11 `lambda_handler` lists `check_ebs_encryption()` in its orchestrator but the blueprint did not give it a dedicated file/spec. Severity: unencrypted in-use volume → HIGH, available volume → MEDIUM.
+  - `src/security_scanner/requirements.txt` — `boto3` only.
+- **Files modified (IAM retrofit):**
+  - `terraform/modules/iam/main.tf` — security_scanner role: combined `EC2SecurityGroupsRead` into `EC2SecurityReadOnly` adding `ec2:DescribeVolumes` for the EBS check. Both are Describe* (no resource-level perms possible), so single statement.
+- **`terraform plan` result:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — same shape as STEP 9 (nothing applied yet, so the retrofit just changes JSON inside a not-yet-created inline policy). No apply (blueprint defers to STEP 18).
+- **Local smoke test:** All 5 modules import cleanly under venv (Python 3.13.7). Synthetic-data run of `check_security_groups` with 5 fake SGs produced exactly the expected 3 findings (CRITICAL all-open, CRITICAL ssh-open, HIGH postgres-open), correctly skipping port-80 public and the internal-10.x SG. Real unit tests are STEP 15.
+- **Key decisions:**
+  - **One file per resource type (`sg_checker.py`, `s3_checker.py`, `iam_checker.py`, `ebs_checker.py`) + thin handler:** Same pattern as STEP 10's pure-helpers split. Each checker takes its boto3 client as a parameter, so STEP 15 mocks the client and asserts call args without ever touching AWS. The handler is just orchestration + stamping + batch-write — nothing to unit-test there.
+  - **Per-resource try/except inside each checker:** Without it, one bucket the scanner can't read (e.g. cross-account ACL block) aborts the entire S3 check. The wrap-and-log pattern keeps the scan running over all the buckets/users/volumes that DO succeed and surfaces the failures in CloudWatch logs.
+  - **`finding_id`/`timestamp`/`expires_at` stamped centrally in the handler:** Checkers return "raw" findings — fields the checker knows (resource_id, severity, etc.). Handler adds the cross-cutting fields. Keeps checkers pure and matches the schema invariant across all categories (cost + security + cleanup): same handler responsibility, every Lambda.
+  - **CRITICAL threshold on SSH/RDP, HIGH on other public-non-80/443:** Matches blueprint, matches real risk model. SSH-open-to-world is the textbook lateral-movement entry. Other public TCP ports are still wrong but rarely interactive shell access.
+  - **EBS check beyond literal spec (recommended option, user-confirmed):** Blueprint's STEP 11 lambda_handler explicitly calls `check_ebs_encryption()` but section 4 does not give it dedicated file detail. Two choices: skip and leave the handler broken, or build it. Built it, with the matching IAM retrofit, because it's a high-value security check (EBS-at-rest encryption is a SOC2/PCI control) and the cost is one file plus one extra Describe action.
+  - **`metadata` dict only when non-empty:** DynamoDB rejects empty maps in some paths; popping the key when there's nothing to add keeps the item schema lean. Cost-scanner findings did the same (no metadata field at all).
+  - **`logger.setLevel(logging.INFO)` at module load:** Same default as cost_scanner — surfaces per-check counts in CloudWatch by default; can be turned down later.
+- **Open TODO (carried, not regressed):**
+  - Scope `ses:SendEmail` to verified-identity ARN (from STEP 7).
+  - Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress` with tag-based Condition (from STEP 4).
+
 ### ⬜ STEP 12 — Write the Resource Cleanup Lambda
 ### ⬜ STEP 13 — Write the Report Generator Lambda
 ### ⬜ STEP 14 — Write the Shared Utilities
@@ -361,6 +387,10 @@
 | 2026-05-17 | Skip services with `len(day_costs) < 2` or `avg_cost <= 0` | Brand-new services or those at $0 baseline would either fail with div-by-zero or false-positive every first scan after enablement | Treat as anomaly when first non-zero spend appears — useful signal but high noise; can revisit when SNS routing has filters |
 | 2026-05-17 | `uuid.uuid4()` finding_id over deterministic `(date, service_name)` | Blueprint specifies uuid. Duplicates on re-run cleaned up by 90-day TTL | Deterministic id `cost-<date>-<service>` — idempotent but deviates from blueprint |
 | 2026-05-17 | `Decimal(str(amount))` not `Decimal(amount)` for DynamoDB | DynamoDB rejects floats; `str()` preserves Cost Explorer's textual precision and keeps the stored value human-readable | `Decimal(amount)` — produces ugly binary-float precision artifacts in the table |
+| 2026-05-17 | Security scanner: one file per resource type (sg/s3/iam/ebs) + thin handler | Same pure-helpers-with-injected-client pattern as STEP 10. Each checker is mockable in STEP 15 without moto; handler is just orchestration. Adds a small fan-out cost in file count but keeps each file under 200 lines and single-responsibility | Single-file scanner — simpler, but every check shares boto3 state and every unit test patches module-level globals |
+| 2026-05-17 | Per-resource try/except inside each checker | One unreadable bucket / one IAM user we can't introspect must not abort the whole scan. Wrap-and-log keeps the scan going over the successful resources and surfaces failures in CloudWatch | No wrapping — simpler code, but one cross-account-blocked bucket kills the entire S3 check on every scheduled run |
+| 2026-05-17 | Stamp `finding_id`/`timestamp`/`expires_at` centrally in the handler, not in each checker | Checkers stay pure (resource_id + severity + check_name + description). Handler owns the cross-cutting schema invariant — same shape across cost / security / cleanup categories | Stamp inside each checker — duplicates the same 4 lines per checker; schema drift if one checker forgets a field |
+| 2026-05-17 | Added EBS encryption checker + retrofitted IAM with `ec2:DescribeVolumes` (beyond literal blueprint spec) | Blueprint STEP 11 lambda_handler lists `check_ebs_encryption()` but doesn't give it a dedicated file/spec. Building it costs 1 file + 1 Describe action; skipping it leaves the handler call broken and drops a SOC2/PCI-relevant check | (a) Skip entirely — handler call would 404. (b) Stub with NotImplementedError — handler would 500 in production. Building it is the honest read of the blueprint |
 
 ---
 
@@ -456,5 +486,13 @@
 - **STEP 10 — Why `PAY_PER_REQUEST` table writes use `batch_writer()`:** "DynamoDB's `PutItem` is one request per item — 30 services × 30 days = 900 PutItem calls for the cost-data write alone. `batch_writer()` is a client-side context manager that buffers up to 25 items per `BatchWriteItem` call, automatically flushes when full, and retries any unprocessed items returned in the response. Same data, ~36 API calls instead of 900. On a PAY_PER_REQUEST table, every write is billed at the same per-request rate either way, but the throughput and the latency improve by an order of magnitude."
 
 - **STEP 10 — Why floats become Decimal before going to DynamoDB:** "DynamoDB's number type is an arbitrary-precision decimal — it explicitly rejects Python floats because float-to-decimal conversion introduces binary-precision artifacts (`Decimal(0.1)` is not `0.1`). The boto3 SDK enforces this. The fix is `Decimal(str(amount))` — convert to a string first, then to Decimal, so the value the API sent (e.g. `'1.2345'`) becomes the exact value stored in the table. It's a small detail but it's the kind of thing that gets caught in code review when someone notices `1.0000000000000000055` in a cost report."
+
+- **STEP 11 — Why split each checker into its own file:** "Same logic as the cost scanner split: each checker takes its boto3 client as a parameter and returns a list of finding dicts. The handler is the I/O boundary — env vars, real clients, DynamoDB batch write. The checkers are pure logic. That gives unit tests a single seam: pass in a `Mock()` for the client, assert the call args, assert the returned findings. The alternative — one monolithic Lambda — works but every test ends up patching module-level boto3 initialization, which is fragile and hides what's actually being verified."
+
+- **STEP 11 — Why CRITICAL on SSH/RDP open to the world, HIGH on other public ports:** "SSH on port 22 and RDP on 3389 are the most common initial-access vectors for compromised AWS accounts — they're interactive shells, so a successful brute-force or credential-stuffing attack gives you an immediate command line. Verizon's DBIR has them at the top of cloud-breach root causes every year. Other ports open to 0.0.0.0/0 (Postgres on 5432, Mongo on 27017, etc.) are still wrong, but they require an additional exploitation step beyond authentication. The severity ladder reflects that — CRITICAL for direct shell paths, HIGH for the rest."
+
+- **STEP 11 — Per-resource try/except around each AWS call:** "If `get_bucket_encryption` raises on one bucket — say cross-account ACL blocks our read — and we don't catch it, the entire S3 check aborts. That's the textbook 'one bad apple' failure mode. The pattern is: wrap each per-resource call, log the failure to CloudWatch so it's visible, return None from the inner function, continue with the next bucket. The scan always completes; failures are surfaced; the operator decides what to do about the unreadable resource. This is the same defensive pattern you'd apply to any batch-of-N pipeline where one item shouldn't kill the run."
+
+- **STEP 11 — Why I added EBS encryption check beyond the literal blueprint:** "Blueprint section 4 lists `check_ebs_encryption()` in the `lambda_handler` orchestrator, but the per-checker spec section doesn't include EBS — that's an inconsistency in the blueprint. The honest read is that the author intended it but forgot the per-file detail. Two ways to handle that: skip the call and leave a broken orchestrator, or build the checker. I built it because EBS-at-rest encryption is a SOC2 control and PCI 3.4 requirement, and the cost was one file plus one extra `ec2:DescribeVolumes` action in the IAM role. The retrofit pattern is the same one we used in STEP 6 (DynamoDB → KMS) — flag the gap, propose the fix, get confirmation, retrofit, plan."
 
 - **STEP 16 (Step Functions over chained Lambdas):** _[fill in during STEP 16]_

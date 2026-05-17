@@ -148,10 +148,16 @@ resource "aws_iam_role_policy" "security_scanner" {
         Resource = "*" # Config rule ARNs vary; scoping later if we manage rules in Terraform.
       },
       {
-        Sid      = "EC2SecurityGroupsRead"
-        Effect   = "Allow"
-        Action   = ["ec2:DescribeSecurityGroups"]
-        Resource = "*" # Describe doesn't support resource-level perms.
+        # SG check (STEP 11) + EBS encryption check (STEP 11) both live in
+        # the security_scanner Lambda. Describe* doesn't support resource-
+        # level perms, so they're grouped under one statement.
+        Sid    = "EC2SecurityReadOnly"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeVolumes"
+        ]
+        Resource = "*"
       },
       {
         # Read all buckets' configs to check for misconfigs. Scanner must

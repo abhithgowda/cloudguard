@@ -7,9 +7,9 @@
 
 ## Current Status
 
-- **Last completed STEP:** 9 (Build the Lambda Terraform Module — reusable)
-- **Next up:** STEP 10 (Write the Cost Scanner Lambda)
-- **Last updated:** 2026-05-16
+- **Last completed STEP:** 10 (Write the Cost Scanner Lambda)
+- **Next up:** STEP 11 (Write the Security Scanner Lambda)
+- **Last updated:** 2026-05-17
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
 
@@ -267,8 +267,34 @@
   - **`hashicorp/archive` provider:** New dependency introduced by `data "archive_file"`. `terraform init -upgrade` fetched v2.8.0, lock file updated and committed.
 - **`terraform plan` result:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — 33 prior + 4 `aws_lambda_function` + 4 `aws_cloudwatch_log_group`. No apply (blueprint defers apply to STEP 18).
 
-### ⬜ STEP 10 — Write the Cost Scanner Lambda
-### ⬜ STEP 11 — Write the Security Scanner Lambda
+### ✅ STEP 10 — Write the Cost Scanner Lambda
+*Completed: 2026-05-17 · Commit: `<pending>`*
+
+- **Files written:**
+  - `src/cost_scanner/handler.py` — Lambda entrypoint. Reads `FINDINGS_TABLE`, `COST_DATA_TABLE`, `ENVIRONMENT` env vars (wired in STEP 9). Calls `get_cost_data` → `store_cost_data` → `detect_anomalies` → `store_findings`. Returns `{anomalies_found, total_daily_cost, services_scanned}`.
+  - `src/cost_scanner/cost_analyzer.py` — pure helpers split out so STEP 15 unit tests can mock the boto3 clients and call directly without invoking the Lambda runtime: `get_cost_data`, `detect_anomalies`, `store_cost_data`, `store_findings`, `_severity_for`.
+  - `src/cost_scanner/requirements.txt` — `boto3` only (already in the Lambda runtime, but listed for the STEP 19 packaging script).
+- **Anomaly detection design:**
+  - 30-day daily granularity Cost Explorer pull, grouped by `SERVICE` dimension.
+  - Baseline = average of the prior N–1 days (excludes the day being evaluated — otherwise the spike dilutes its own baseline).
+  - Threshold = 1.5x. `ratio >= 2.0` → `CRITICAL`, `ratio >= 1.5` → `HIGH` (matches blueprint).
+  - Skip services with `len(day_costs) < 2` (brand-new services have no baseline — would false-positive every time).
+  - Skip services with `avg_cost <= 0` (no div-by-zero, and "$0 → $5" is a turn-on event, not an anomaly).
+- **DynamoDB writes:**
+  - `cost-data` table: PK `date`, SK `service_name`, attribute `unblended_cost` (Decimal). Re-running the same day overwrites the row — latest data wins, idempotent for end-of-day re-evaluation.
+  - `findings` table: PK `finding_id` (uuid), SK `timestamp` (ISO-8601 UTC), `category = "cost"`, `severity`, `resource_id` (service name), `resource_type = "aws_service"`, `check_name = "cost_anomaly_30d_baseline"`, `description` (human-readable), `expected_cost` / `actual_cost` / `ratio` as Decimal, `expires_at` (epoch seconds, +90 days) for the table's TTL attribute.
+  - Both tables written via `table.batch_writer()` context manager — auto-batches up to 25 items and retries unprocessed items.
+- **Key decisions:**
+  - **Pure helpers in `cost_analyzer.py`, side-effects in `handler.py`:** the helpers take a boto3 client/resource as a parameter — STEP 15 mocks the client with `unittest.mock.Mock()` and asserts call args without ever touching AWS. The handler is the thin shell that initializes real clients and wires env vars; nothing to test there beyond an integration test.
+  - **`Decimal(str(amount))`, not `Decimal(amount)`:** DynamoDB rejects Python floats (uses Decimal internally). Converting via `str()` preserves the textual precision Cost Explorer sends; `Decimal(0.1)` would produce `Decimal('0.1000000000000000055511151231257827021181583404541015625')` which is correct but ugly in the table.
+  - **Pagination via `NextPageToken` loop, not `paginate`:** Cost Explorer's `get_cost_and_usage` uses a non-standard pagination key (`NextPageToken` rather than `NextToken`) so the standard `client.get_paginator()` doesn't apply. Hand-roll the loop; same shape as AWS examples.
+  - **`finding_id = uuid.uuid4()` per anomaly per run (not deterministic):** Blueprint specifies uuid. Means re-running the scanner on the same anomaly creates duplicate findings — TTL cleans up at 90 days. A deterministic key like `(date, service_name)` would be idempotent but the blueprint says uuid, so I'm following the blueprint. Trade-off acknowledged.
+  - **No SNS publish from this Lambda:** Blueprint puts notification in the Report Generator (STEP 13). Cost scanner only writes to DynamoDB. The `SNS_TOPIC_ARN` env var wired in STEP 9 is unused here — left in place for future use, cheap.
+  - **`logger.setLevel(logging.INFO)` at module load:** Lambda's default log level is WARNING. Setting INFO at module init means scanner progress shows up in CloudWatch by default; can be downgraded to WARNING via env var later if it gets noisy.
+- **Local sanity testing:** `python -c "import handler; import cost_analyzer"` passes. `detect_anomalies()` smoke-tested with 5 synthetic services covering anomaly, no-anomaly, single-day, zero-baseline, and CRITICAL-vs-HIGH severity paths — all produced the expected output. Real unit tests are STEP 15.
+- **Known gap — local Python 3.13 vs Lambda 3.12:** carried forward from STEP 1. Code uses no 3.13-only syntax. Will validate via Lambda runtime on the first STEP 18 apply.
+
+
 ### ⬜ STEP 12 — Write the Resource Cleanup Lambda
 ### ⬜ STEP 13 — Write the Report Generator Lambda
 ### ⬜ STEP 14 — Write the Shared Utilities
@@ -330,6 +356,11 @@
 | 2026-05-16 | `data "archive_file"` in the module (not a packaging-script-only flow) | Blueprint STEP 9 spec; gives Terraform a `source_code_hash` driver so code changes flow into plans without manual zip steps; coexists with the STEP 19 packaging script which can pre-populate a `package/` source_dir | Skip archive_file, rely entirely on the STEP 19 bash script — works but Terraform can't tell when code changed and won't update the function on `apply` unless the script ran first |
 | 2026-05-16 | `dynamic "environment"` block on `aws_lambda_function` | AWS rejects an empty `environment {}` block; passing an empty map to a static block would error. Dynamic block omits the block entirely when no env vars | Always emit the block — fails for functions that legitimately have no env vars |
 | 2026-05-16 | `AUTO_REMEDIATE = "false"` env var on resource_cleanup Lambda | Cleanup role has `ec2:DeleteVolume`/`ec2:ReleaseAddress` — destructive. Defaulting to dry-run mode means the function will scan and log findings but NOT delete until an explicit override (Step Functions input later) flips it. Belt-and-braces with the role-level Condition TODO | Default to true — IAM allows it, role is built for it. Rejected: a code bug shouldn't be able to release every EIP in the account. |
+| 2026-05-17 | Cost scanner: pure helpers (`cost_analyzer.py`) + thin handler (`handler.py`) | Helpers take boto3 client as a parameter — STEP 15 mocks the client and tests logic without an AWS call. Handler is the wiring shell, nothing to test there | Single-file Lambda — simpler but every helper test would need to patch module-level `boto3.client(...)` initialization order |
+| 2026-05-17 | Baseline = average of prior N–1 days, exclude the day being evaluated | Including today in its own baseline dilutes the spike (a 5x spike on day 30 with 29 days of $1 baseline still has avg $1.13, ratio drops from 5.0 to 4.4 — minor here but breaks at higher cardinality) | Include all days in baseline — simpler arithmetic, but a self-diluting signal |
+| 2026-05-17 | Skip services with `len(day_costs) < 2` or `avg_cost <= 0` | Brand-new services or those at $0 baseline would either fail with div-by-zero or false-positive every first scan after enablement | Treat as anomaly when first non-zero spend appears — useful signal but high noise; can revisit when SNS routing has filters |
+| 2026-05-17 | `uuid.uuid4()` finding_id over deterministic `(date, service_name)` | Blueprint specifies uuid. Duplicates on re-run cleaned up by 90-day TTL | Deterministic id `cost-<date>-<service>` — idempotent but deviates from blueprint |
+| 2026-05-17 | `Decimal(str(amount))` not `Decimal(amount)` for DynamoDB | DynamoDB rejects floats; `str()` preserves Cost Explorer's textual precision and keeps the stored value human-readable | `Decimal(amount)` — produces ugly binary-float precision artifacts in the table |
 
 ---
 
@@ -418,4 +449,12 @@
 - **STEP 9 — Two different KMS policy statement shapes for Lambda vs CloudWatch Logs:** "Lambda env-var decrypt is the function's execution role calling Decrypt via the Lambda service — so the principal is the role ARN and the Condition is `kms:ViaService = lambda.<region>.amazonaws.com`. CloudWatch Logs encryption is the Logs service principal doing its own encrypt on log events — the principal is `logs.<region>.amazonaws.com` and the Condition is `kms:EncryptionContext:aws:logs:arn` matching the log group ARN. Two statements, two different security models, both expressing 'this key can only be used by THIS service for THESE resources.'"
 
 - **STEP 9 — Why dry-run-by-default on the resource cleanup Lambda:** "The cleanup role has `ec2:DeleteVolume` and `ec2:ReleaseAddress` — anything wrong with the scan logic could release every EIP and delete every available EBS volume in the account. The IAM hardening TODO is to scope those actions with a `Condition: ec2:ResourceTag/AutoCleanup = true`, but that requires tagging discipline we don't have yet. In the meantime: `AUTO_REMEDIATE = false` env var. Code scans, logs findings, sends SNS alerts — but doesn't actually delete. Step Functions input later can flip the flag to enable destruction once we trust the detection logic. Same defense pattern as the `Deny aws:SecureTransport = false` on S3: rely on multiple independent gates, default to safe."
+- **STEP 10 — Why split `handler.py` from `cost_analyzer.py`:** "The handler is the I/O boundary — it reads env vars, builds boto3 clients, returns the Lambda response. The analyzer is pure logic — it takes a client as a parameter, takes a dict in, returns a dict out, never touches the environment. That split is what makes the logic testable: in STEP 15 I pass a `Mock()` for the boto3 client and assert exactly what `get_cost_and_usage` was called with, without ever needing AWS credentials or moto. Single-file Lambdas are simpler when there's no logic worth testing — for anything with branching, split."
+
+- **STEP 10 — Why exclude the day being evaluated from its own baseline:** "If you average N days and compare day N against that average, the day's own value pulls the baseline toward itself. A genuine spike looks smaller than it is — the bigger the spike, the more the average is dragged up, the smaller the apparent ratio. Comparing day N against the average of days 1..N-1 keeps the baseline independent of the value under test. Same reason rolling forecasts in finance use trailing windows, not centered ones."
+
+- **STEP 10 — Why `PAY_PER_REQUEST` table writes use `batch_writer()`:** "DynamoDB's `PutItem` is one request per item — 30 services × 30 days = 900 PutItem calls for the cost-data write alone. `batch_writer()` is a client-side context manager that buffers up to 25 items per `BatchWriteItem` call, automatically flushes when full, and retries any unprocessed items returned in the response. Same data, ~36 API calls instead of 900. On a PAY_PER_REQUEST table, every write is billed at the same per-request rate either way, but the throughput and the latency improve by an order of magnitude."
+
+- **STEP 10 — Why floats become Decimal before going to DynamoDB:** "DynamoDB's number type is an arbitrary-precision decimal — it explicitly rejects Python floats because float-to-decimal conversion introduces binary-precision artifacts (`Decimal(0.1)` is not `0.1`). The boto3 SDK enforces this. The fix is `Decimal(str(amount))` — convert to a string first, then to Decimal, so the value the API sent (e.g. `'1.2345'`) becomes the exact value stored in the table. It's a small detail but it's the kind of thing that gets caught in code review when someone notices `1.0000000000000000055` in a cost report."
+
 - **STEP 16 (Step Functions over chained Lambdas):** _[fill in during STEP 16]_

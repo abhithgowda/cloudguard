@@ -142,10 +142,18 @@ resource "aws_iam_role_policy" "security_scanner" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "ConfigCompliance"
-        Effect   = "Allow"
-        Action   = ["config:GetComplianceDetailsByConfigRule"]
-        Resource = "*" # Config rule ARNs vary; scoping later if we manage rules in Terraform.
+        # AWS Config compliance scan (config_checker.py, STEP 11 hotfix).
+        # DescribeComplianceByConfigRule lists rules + overall compliance;
+        # GetComplianceDetailsByConfigRule returns the non-compliant
+        # resources for each NON_COMPLIANT rule. Neither supports
+        # resource-level perms — Config rules are account-scoped concepts.
+        Sid    = "ConfigCompliance"
+        Effect = "Allow"
+        Action = [
+          "config:DescribeComplianceByConfigRule",
+          "config:GetComplianceDetailsByConfigRule"
+        ]
+        Resource = "*"
       },
       {
         # SG check (STEP 11) + EBS encryption check (STEP 11) both live in

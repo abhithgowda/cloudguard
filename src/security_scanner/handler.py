@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 
+from config_checker import check_config_compliance
 from ebs_checker import check_ebs_encryption
 from iam_checker import check_iam_users
 from s3_checker import check_s3_buckets
@@ -32,6 +33,7 @@ FINDING_TTL_DAYS = 90
 ec2 = boto3.client("ec2")
 s3 = boto3.client("s3")
 iam = boto3.client("iam")
+config = boto3.client("config")
 dynamodb = boto3.resource("dynamodb")
 
 
@@ -78,8 +80,11 @@ def lambda_handler(event, context):
     s3_findings = _run_check("s3_buckets", check_s3_buckets, s3)
     iam_findings = _run_check("iam_users", check_iam_users, iam)
     ebs_findings = _run_check("ebs_encryption", check_ebs_encryption, ec2)
+    config_findings = _run_check("config_compliance", check_config_compliance, config)
 
-    all_findings = sg_findings + s3_findings + iam_findings + ebs_findings
+    all_findings = (
+        sg_findings + s3_findings + iam_findings + ebs_findings + config_findings
+    )
     _stamp_findings(all_findings)
 
     by_severity = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -96,6 +101,7 @@ def lambda_handler(event, context):
             "s3_buckets": len(s3_findings),
             "iam_users": len(iam_findings),
             "ebs_encryption": len(ebs_findings),
+            "config_compliance": len(config_findings),
         },
     }
     logger.info("Summary: %s", json.dumps(summary))

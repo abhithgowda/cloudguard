@@ -10,3 +10,12 @@ environment   = "dev"
 project       = "cloudguard"
 alert_email   = "your-email@example.com"
 bucket_suffix = "your-handle"  # Globally-unique suffix for S3 buckets. Use your GitHub handle or similar.
+
+# Optional — defaults to alert_email so one SES verification click covers
+# both From: and To:. Set this only if the report emails should come from
+# a different identity than they're delivered to.
+# ses_sender_email = "reports@your-verified-domain.com"
+
+# Optional — default window for the report Lambda when EventBridge doesn't
+# override via event input. 24 = daily, 168 = weekly.
+# report_window_hours = 24

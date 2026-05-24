@@ -469,6 +469,7 @@
 - [x] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` — done in STEP 6 (2026-05-16)
 - [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress`/`ec2:DeleteSnapshot` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true` (STEP 12 added DeleteSnapshot to this list)
 - [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
+- [ ] **Hardening (post-STEP 18) — AWS Config Terraform module:** `config_checker.py` (STEP 11 hotfix) currently no-ops because nothing in CloudGuard creates Config rules — it only reads them. Add `terraform/modules/config/` provisioning: (a) `aws_config_configuration_recorder` + `aws_config_delivery_channel` (the "Config is on" switch + S3 destination), (b) a curated set of ~10-15 `aws_config_config_rule` managed rules aligned to CIS / AWS Foundational Security Best Practices — root MFA, public S3 read/write prohibited, encrypted-volumes, rds-storage-encrypted, iam-password-policy, vpc-flow-logs-enabled, mfa-enabled-for-iam-console-access. Expected cost ~$2–$15/month on dev depending on resource-change churn. Strongest interview story: "I write Config rules in Terraform" is a top-3 IaC-for-security 12 LPA question. **Alternative considered:** AWS Foundational Security Best Practices conformance pack — one Terraform resource shipping ~50 rules — cheaper to implement but reads as the canned answer in interviews.
 
 ---
 

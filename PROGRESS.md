@@ -369,7 +369,7 @@
   - Replace hardcoded ap-south-1 pricing constants with AWS Pricing API integration when multi-region scanning is added.
 
 ### ✅ STEP 13 — Write the Report Generator Lambda
-*Completed: 2026-05-24 · Commit: TBD*
+*Completed: 2026-05-24 · Commit: `916d7bf`*
 
 - **Files written:**
   - `src/report_generator/html_builder.py` — pure helpers, zero I/O. `build_report(findings, cost_data, remediations, *, window_hours, environment, generated_at=None)` returns a full self-contained HTML document; `build_email_summary(...)` returns a short email-body HTML with a "View full report" link button. All styling is `style=""`-attribute inline (no `<style>` block) so the same string renders identically in Gmail, Outlook, Apple Mail, and a browser. Severity → colour mapping: CRITICAL red, HIGH orange, MEDIUM yellow, LOW blue. Helper sections: `_executive_summary` (6 metric tiles), `_cost_section` (top-10 services × last-7-days pivot table), `_security_section` (findings grouped by severity), `_remediation_section` (cleanup findings + success/failed/dry-run remediation counts + a per-failure detail table when any failed).

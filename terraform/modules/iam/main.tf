@@ -321,11 +321,16 @@ resource "aws_iam_role_policy" "report_generator" {
         ]
       },
       {
-        # Write HTML reports to the reports bucket only. Object-level
-        # permissions need the /* suffix on the bucket ARN.
-        Sid      = "S3WriteReports"
+        # Write HTML reports to the reports bucket AND read them back.
+        # GetObject is required so the pre-signed URLs the report Lambda
+        # generates actually resolve — S3 evaluates the URL under the
+        # *signing principal's* identity policy at call time. Without
+        # GetObject here, every recipient clicking the email link gets
+        # AccessDenied even though they have a valid signed URL.
+        # Object-level permissions need the /* suffix on the bucket ARN.
+        Sid      = "S3WriteAndReadReports"
         Effect   = "Allow"
-        Action   = ["s3:PutObject"]
+        Action   = ["s3:PutObject", "s3:GetObject"]
         Resource = "${var.reports_bucket_arn}/*"
       },
       {

@@ -31,6 +31,11 @@ provider "aws" {
 locals {
   reports_bucket_name = "${var.project}-${var.environment}-reports-${var.bucket_suffix}"
   reports_bucket_arn  = "arn:aws:s3:::${local.reports_bucket_name}"
+
+  # SES sender defaults to the alert recipient — one verified identity covers
+  # both ends in sandbox SES. Override via tfvars only if the From: address
+  # needs to differ from the To: address.
+  ses_sender_email = var.ses_sender_email != "" ? var.ses_sender_email : var.alert_email
 }
 
 # -----------------------------------------------------------------------------
@@ -211,8 +216,13 @@ module "report_generator" {
     REMEDIATION_LOG_TABLE = module.dynamodb.remediation_log_table_name
     REPORTS_BUCKET        = module.s3.reports_bucket_name
     SNS_TOPIC_ARN         = module.sns.topic_arn
-    ALERT_EMAIL           = var.alert_email
-    ENVIRONMENT           = var.environment
-    LOG_LEVEL             = "INFO"
+    # SES sender + recipient. In dev these are typically the same address
+    # (one verification covers both ends); override `ses_sender_email` in
+    # tfvars only if they need to differ.
+    SES_SENDER_EMAIL    = local.ses_sender_email
+    ALERT_EMAIL         = var.alert_email
+    REPORT_WINDOW_HOURS = tostring(var.report_window_hours)
+    ENVIRONMENT         = var.environment
+    LOG_LEVEL           = "INFO"
   }
 }

@@ -105,3 +105,26 @@ output "lambda_log_group_names" {
     report_generator = module.report_generator.log_group_name
   }
 }
+
+# -----------------------------------------------------------------------------
+# Step Functions outputs (STEP 16)
+# -----------------------------------------------------------------------------
+output "step_functions_state_machine_arn" {
+  description = "ARN of the CloudGuard state machine. Consumed by EventBridge (STEP 17) as the schedule target."
+  value       = module.step_functions.state_machine_arn
+}
+
+output "step_functions_state_machine_name" {
+  description = "Name of the CloudGuard state machine (e.g. cloudguard-dev-workflow)."
+  value       = module.step_functions.state_machine_name
+}
+
+output "step_functions_role_arn" {
+  description = "ARN of the IAM role assumed by Step Functions."
+  value       = module.step_functions.role_arn
+}
+
+output "step_functions_log_group_name" {
+  description = "CloudWatch log group receiving SFN execution logs (CMK-encrypted, 30-day retention)."
+  value       = module.step_functions.log_group_name
+}

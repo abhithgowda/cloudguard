@@ -446,10 +446,12 @@
 ### ⬜ STEP 20 — Test the System End-to-End
 ### ⬜ STEP 21 — Build the CI/CD Pipeline
 ### ⬜ STEP 22 — Add CloudWatch Dashboard
-### ⬜ STEP 23 — Write Documentation
+### ⬜ STEP 22.5 — AWS Config Terraform Module *(slotted from Open TODOs, 2026-05-25 — see Slotting Policy)*
+### ⬜ STEP 23 — Write Documentation *(+ README "Known Limitations" section for the 4 dropped trigger-conditional items)*
 ### ⬜ STEP 24 — Add Resource Tagging Strategy
+### ⬜ STEP 25 — *(post-DoD stretch)* Human-in-the-loop remediation with `.waitForTaskToken`
 
-**Legend:** ✅ done · ⏭️ up next · 🛑 blocked · ⬜ not started
+**Legend:** ✅ done · ⏭️ up next · 🛑 blocked · ⬜ not started · ⭐ stretch (post-Definition-of-Done)
 
 ---
 
@@ -544,22 +546,48 @@
 
 ## Open Questions / TODOs
 
+> **Slotting policy (decided 2026-05-25):** Every open TODO must have an explicit slot in a remaining STEP, OR be classified as a stretch / post-Definition-of-Done extension, OR be dropped. Trigger-conditional micro-items (premature optimizations, accuracy improvements, code-organization tweaks) are dropped here and surface in the README as "Known Limitations" at STEP 23. None of the dropped items represent security gaps — all are performance, accuracy, or maintainability deferrals with documented trigger conditions.
+
+### ✅ Completed
+
 - [x] Pick alert email address — set in local `terraform.tfvars` during STEP 4
-- [ ] Decide Slack vs email-only for alerts (Slack webhook stored in Secrets Manager if used)
-- [ ] Confirm free tier limits before STEP 18 (`terraform apply`) — Lambda, DynamoDB, S3 all have free tiers; Step Functions has 4000 free state transitions/month; KMS CMK = $1/month (not free tier)
 - [x] **STEP 6 retrofit:** swap STEP 5 DynamoDB tables from `aws/dynamodb` managed key to `module.kms.key_arn` — done in STEP 6 (2026-05-16)
-- [ ] **Hardening (post-STEP 17):** Scope `ec2:DeleteVolume`/`ec2:ReleaseAddress`/`ec2:DeleteSnapshot` in resource_cleanup role with `Condition: ec2:ResourceTag/AutoCleanup=true` (STEP 12 added DeleteSnapshot to this list)
-- [ ] **Hardening (post-STEP 7):** Scope `ses:SendEmail` with Condition on verified SES identity ARN
-- [ ] **Post-STEP 16 extension — human-in-the-loop remediation approval (interview-grade):** Insert a `WaitForHumanApproval` Task state between `ParallelScanners` and a new `ExecuteRemediation` Task using Step Functions' `.waitForTaskToken` callback pattern. Flow: scanners run → if any cleanup findings, publish SNS with the task token embedded in an approve/reject link → API Gateway + Lambda calls `states:SendTaskSuccess`/`SendTaskFailure` with the human's decision → Choice state routes to `ExecuteRemediation` (only path where `auto_remediate=true` is set on the resource_cleanup invoke) or skips to `GenerateReport`. Sign the callback links with a Secrets Manager key so they can't be forged. Extend `cloudguard-remediation-log` schema with `approver`, `approved_at`, `decision`. **Why this matters for 12 LPA:** today's two-gate auto-remediate (env+event) is application-level defense in depth — anyone with `states:StartExecution` can flip the event flag silently. A `.waitForTaskToken` state moves the gate from "the code that runs" to "the workflow's state graph" — auditable, paused executions visible in the console, max wait 1 year, free while paused. This is the canonical answer to "Why Step Functions over chained Lambdas via SNS?" — `.waitForTaskToken` is exactly the thing you can't build cleanly with SNS fan-out.
-- [ ] **Hardening (post-STEP 18) — AWS Config Terraform module:** `config_checker.py` (STEP 11 hotfix) currently no-ops because nothing in CloudGuard creates Config rules — it only reads them. Add `terraform/modules/config/` provisioning: (a) `aws_config_configuration_recorder` + `aws_config_delivery_channel` (the "Config is on" switch + S3 destination), (b) a curated set of ~10-15 `aws_config_config_rule` managed rules aligned to CIS / AWS Foundational Security Best Practices — root MFA, public S3 read/write prohibited, encrypted-volumes, rds-storage-encrypted, iam-password-policy, vpc-flow-logs-enabled, mfa-enabled-for-iam-console-access. Expected cost ~$2–$15/month on dev depending on resource-change churn. Strongest interview story: "I write Config rules in Terraform" is a top-3 IaC-for-security 12 LPA question. **Alternative considered:** AWS Foundational Security Best Practices conformance pack — one Terraform resource shipping ~50 rules — cheaper to implement but reads as the canned answer in interviews.
-- [ ] **Post-STEP 14 — refactor existing 4 Lambdas to consume `src/shared/` (blueprint gap, flagged in STEP 14):** STEPs 10–13 wrote the cost_scanner, security_scanner, resource_cleanup, and report_generator Lambdas before `src/shared/` existed, so each inlines its own `table.batch_writer()` loop, its own `Decimal(str(...))` coercion, and its own SNS-publish pattern. STEP 14 built the shared utilities; the blueprint has NO explicit STEP for the refactor. **Recommended slot:** first sub-task of STEP 15, before writing unit tests — so the new tests cover the refactored code path (testing the duplicated inline code AND the shared utilities, then deleting the duplicates, would mean throwing away tests). Concretely:
+
+### 🟡 Decision needed before STEP 18 starts
+
+- [ ] **Slack vs email-only for alerts** — final answer needed before STEP 18 wires the SNS subscription type. Email-only ships today via the existing topic policy; Slack would require Secrets Manager (for the webhook URL), an HTTPS subscription with retry policy on the topic, and the `shared.notification.send_slack_webhook` helper from STEP 14 wired into the report_generator. **Recommendation:** email-only for v1; revisit when alert volume justifies a dedicated channel. Confirm by start of STEP 18.
+
+### 📍 Slotted to existing STEPs
+
+- [ ] **Refactor 4 existing Lambdas to consume `src/shared/`** → **STEP 15 (first sub-task, before writing tests)**. STEPs 10–13 inlined `batch_writer()`, `Decimal(str(...))` coercion, and SNS publish because `shared/` did not yet exist. Doing the refactor first means STEP 15's unit tests target the final code path — testing the duplicated inline code AND the shared utilities, then deleting the duplicates, would mean throwing away tests. Concrete mapping:
   - `cost_analyzer.store_cost_data` / `store_findings` → `shared.dynamo_client.batch_put_findings`
   - `security_scanner/handler._batch_write_findings` → `shared.dynamo_client.batch_put_findings`
   - `resource_cleanup/handler._batch_write` (findings + remediation log) → `shared.dynamo_client.batch_put_findings`
   - `report_generator/handler._send_sns` → `shared.notification.send_sns_alert`
   - `report_generator/handler` time-range query of findings/remediation tables → `shared.dynamo_client.query_findings_by_date`
   - Each Lambda's existing pagination loops (security_scanner's IAM/S3 list calls, resource_cleanup's volume/snapshot describes) → `shared.aws_helpers.paginate` where `can_paginate=True`
-  Keep the cost_scanner's hand-rolled `NextPageToken` loop (Cost Explorer doesn't support `get_paginator`). Cost: one focused refactor session; benefit: one batch-write bug-fix point, one notification-channel pattern, future scanners drop in 5 lines instead of 50.
+  - Keep `cost_scanner`'s hand-rolled `NextPageToken` loop (Cost Explorer doesn't support `get_paginator` — STEP 14 made `shared.aws_helpers.paginate` raise `ValueError` on this API explicitly).
+- [ ] **Confirm free tier limits before first `terraform apply`** → **STEP 18 (pre-apply checklist)**. Lambda, DynamoDB, S3, SNS, SES, EventBridge all have free tiers covering CloudGuard's volumes. Step Functions has 4000 free state transitions/month (≥ 30× scan-frequency cap). KMS CMK is $1/month (not free tier) — accepted in STEP 6.
+- [ ] **IAM hardening — scope `ses:SendEmail` to a verified SES identity** → **STEP 18 (IAM module edit, same session as first apply)**. Add `Condition: { StringEquals: { "ses:FromAddress": var.alert_email } }` to the `report_generator` role's `ses:SendEmail` statement. Natural seam — STEP 18 is the first session that runs `terraform apply`, so the constraint is exercised end-to-end immediately. Closes the open TODO carried from STEPs 8 / 11 / 12 / 13.
+- [ ] **IAM hardening — scope destructive EC2 actions with tag-Condition** → **STEP 18 (IAM module edit, same session as SES hardening)**. Add `Condition: { StringEquals: { "ec2:ResourceTag/AutoCleanup": "true" } }` to the `resource_cleanup` role's `ec2:DeleteVolume`, `ec2:ReleaseAddress`, `ec2:DeleteSnapshot` statements. After this, the Lambda can only destroy resources explicitly tagged `AutoCleanup=true` — a single mistagged production volume cannot be deleted even if `AUTO_REMEDIATE=true` and the event flag is set. Three-gate defense (env + event + tag) replaces today's two-gate. Closes the open TODO carried from STEPs 4 / 12.
+- [ ] **AWS Config Terraform module** → **NEW STEP 22.5 (between STEP 22 CloudWatch Dashboard and STEP 23 Documentation)**. Config compliance metrics belong on the dashboard, so 22.5 sits between them naturally. Provisions: (a) `aws_config_configuration_recorder` + `aws_config_delivery_channel` (the "Config is on" switch + S3 destination); (b) a curated set of ~10-15 `aws_config_config_rule` managed rules aligned to CIS / AWS Foundational Security Best Practices — root MFA, public S3 read/write prohibited, encrypted-volumes, rds-storage-encrypted, iam-password-policy, vpc-flow-logs-enabled, mfa-enabled-for-iam-console-access. Expected cost ~$2–$15/month on dev depending on resource-change churn. After 22.5, the `config_checker.py` (STEP 11 hotfix) stops no-opping in dev and actually returns findings. Strongest IaC-for-security interview story: "I write Config rules in Terraform" beats the canned conformance-pack answer.
+- [ ] **Resource tagging strategy across all modules** → **STEP 24 (blueprint)**.
+- [ ] **Manual: SES identity verification before first apply** → **STEP 18 (pre-apply checklist, manual AWS Console step)**. AWS sends a confirmation email; without verification, `report_generator` SES calls fail with `MessageRejected` (handler catches this so S3 archive still happens, but no email goes out). Same email used as both `From` and `To` in sandbox SES — one click covers both ends.
+
+### 🌟 Stretch / Post-Definition-of-Done (interview-grade extensions, NOT gating)
+
+These extend beyond the blueprint's 24-STEP scope but are top-tier 12 LPA interview talking points. Build only after STEP 24 — the base system must work first.
+
+- [ ] **STEP 25 (post-DoD) — Human-in-the-loop remediation with Step Functions `.waitForTaskToken`:** Insert a `WaitForHumanApproval` Task state between `ParallelScanners` and a new `ExecuteRemediation` Task. Flow: scanners run → if any cleanup findings, publish SNS with the task token embedded in approve/reject links → API Gateway + Lambda calls `states:SendTaskSuccess`/`SendTaskFailure` with the human's decision → Choice state routes to `ExecuteRemediation` (only path where `auto_remediate=true` is set on the resource_cleanup invoke) or skips to `GenerateReport`. Sign the callback links with a Secrets Manager key so they can't be forged. Extend `cloudguard-remediation-log` schema with `approver`, `approved_at`, `decision`. **Why this matters:** the three-gate IAM safety (env + event + tag) added in STEP 18 is defense in depth at the application + IAM layer. `.waitForTaskToken` moves the gate into the workflow graph — auditable, paused executions visible in the Step Functions console, max wait 1 year, free while paused. This is the canonical answer to "Why Step Functions over chained Lambdas via SNS?" — exactly the thing you can't build cleanly with SNS fan-out.
+
+### ❌ Dropped (trigger-conditional micro-items — surface in README "Known Limitations" at STEP 23)
+
+None of these are security gaps. All are performance, accuracy, or code-organization deferrals with documented trigger conditions. Each gets a one-line entry in the README under "Known Limitations / Next Iterations" — that's where an interviewer asking "what would you do next?" gets the right pointer.
+
+- ~~**4th GSI on findings table `(environment, timestamp)`**~~ — Performance only. Current Scan + FilterExpression is acceptable at ≤ few hundred findings/day. Trigger: findings volume > ~10k/day. The documented Scan limit IS the right answer today (STEP 13 / STEP 14 interview prep both make this case explicit).
+- ~~**AWS Pricing API integration (replace hardcoded ap-south-1 constants)**~~ — Accuracy only. Today's cost estimates are within ~5% of list price for ap-south-1. Trigger: multi-region scanning feature (which is not in the blueprint).
+- ~~**Archive-tier snapshot scanning**~~ — Completeness only. The standard-tier snapshots that dominate dev accounts ARE scanned; the rare Archive-tier snapshot is skipped. Trigger: same as Pricing API (depends on it).
+- ~~**Move text body templating from `_send_email` into `html_builder.py`**~~ — Code organization only. Current 4-line f-string is fine. Trigger: when text templating grows beyond a one-liner (i.e. probably never within blueprint scope).
 
 ---
 

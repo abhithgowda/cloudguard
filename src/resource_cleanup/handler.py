@@ -36,13 +36,14 @@ from zombie_finder import (
     find_zombie_ebs_volumes,
 )
 
+from shared.dynamo_client import batch_put_findings
+
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 FINDING_TTL_DAYS = 90
 
 ec2 = boto3.client("ec2")
-dynamodb = boto3.resource("dynamodb")
 
 
 # -- Stamping ----------------------------------------------------------------
@@ -59,15 +60,6 @@ def _stamp_findings(raw_findings):
         if f.get("metadata") in (None, {}):
             f.pop("metadata", None)
     return raw_findings
-
-
-def _write_findings(table, findings):
-    if not findings:
-        return 0
-    with table.batch_writer() as batch:
-        for f in findings:
-            batch.put_item(Item=f)
-    return len(findings)
 
 
 # -- Auto-remediate gating ---------------------------------------------------
@@ -130,7 +122,7 @@ def _build_remediation_record(finding, status, action, error_message=None):
     return record
 
 
-def _remediate(findings, remediation_log_table, dry_run):
+def _remediate(findings, remediation_log_table_name, dry_run):
     """Run remediations OR record dry-run skips. Returns counts + records."""
     success = 0
     failed = 0
@@ -159,18 +151,15 @@ def _remediate(findings, remediation_log_table, dry_run):
             failed += 1
             logger.error("Failed to remediate %s %s: %s", rtype, f["resource_id"], error_message)
 
-    if records:
-        with remediation_log_table.batch_writer() as batch:
-            for r in records:
-                batch.put_item(Item=r)
+    batch_put_findings(remediation_log_table_name, records)
 
     return {"success": success, "failed": failed, "skipped_dry_run": skipped}
 
 
 # -- Entrypoint --------------------------------------------------------------
 def lambda_handler(event, context):
-    findings_table = dynamodb.Table(os.environ["FINDINGS_TABLE"])
-    remediation_log_table = dynamodb.Table(os.environ["REMEDIATION_LOG_TABLE"])
+    findings_table_name = os.environ["FINDINGS_TABLE"]
+    remediation_log_table_name = os.environ["REMEDIATION_LOG_TABLE"]
     snapshot_age_days = int(os.environ.get("SNAPSHOT_AGE_DAYS", "180"))
 
     volumes = find_zombie_ebs_volumes(ec2)
@@ -179,7 +168,10 @@ def lambda_handler(event, context):
     all_findings = volumes + eips + snapshots
 
     _stamp_findings(all_findings)
-    findings_written = _write_findings(findings_table, all_findings)
+    # batch_put_findings handles the float→Decimal coercion recursively, which
+    # fixes the latent bug where metadata.monthly_cost_usd (a float from
+    # zombie_finder) would have made boto3 raise TypeError on the first apply.
+    findings_written = batch_put_findings(findings_table_name, all_findings)
 
     estimated_savings = sum(
         f.get("metadata", {}).get("monthly_cost_usd", 0) for f in all_findings
@@ -187,7 +179,7 @@ def lambda_handler(event, context):
 
     armed = _auto_remediate_enabled(event)
     # dry_run is True unless BOTH gates passed.
-    remediation_counts = _remediate(all_findings, remediation_log_table, dry_run=not armed)
+    remediation_counts = _remediate(all_findings, remediation_log_table_name, dry_run=not armed)
 
     summary = {
         "volumes_found": len(volumes),

@@ -40,11 +40,23 @@ locals {
 
   # CloudWatch Logs is granted by service principal (not by Lambda role +
   # kms:ViaService), and scoped by EncryptionContext to ONLY the CloudGuard
-  # Lambda log groups in this env. Wildcard avoids the chicken-and-egg of
-  # needing each function name before the key policy is finalised.
+  # log groups in this env. Wildcard avoids the chicken-and-egg of needing
+  # each function name before the key policy is finalised.
+  #
+  # STEP 16 retrofit: added the SFN log group ARN pattern so Step Functions'
+  # vended-logs delivery can encrypt execution logs with this CMK. The two
+  # patterns are passed as a list to the ArnLike condition — KMS evaluates
+  # the condition as "matches ANY pattern in the list."
   cloudwatch_logs_principal = "logs.${data.aws_region.current.id}.amazonaws.com"
   lambda_log_group_arn_pattern = format(
     "arn:aws:logs:%s:%s:log-group:/aws/lambda/%s-%s-*",
+    data.aws_region.current.id,
+    data.aws_caller_identity.current.account_id,
+    var.project,
+    var.environment,
+  )
+  sfn_log_group_arn_pattern = format(
+    "arn:aws:logs:%s:%s:log-group:/aws/vendedlogs/states/%s-%s-*",
     data.aws_region.current.id,
     data.aws_caller_identity.current.account_id,
     var.project,
@@ -227,7 +239,10 @@ data "aws_iam_policy_document" "kms_key_policy" {
     condition {
       test     = "ArnLike"
       variable = "kms:EncryptionContext:aws:logs:arn"
-      values   = [local.lambda_log_group_arn_pattern]
+      values = [
+        local.lambda_log_group_arn_pattern,
+        local.sfn_log_group_arn_pattern,
+      ]
     }
   }
 }

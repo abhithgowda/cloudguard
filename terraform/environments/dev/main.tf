@@ -226,3 +226,27 @@ module "report_generator" {
     LOG_LEVEL           = "INFO"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Step Functions module (STEP 16)
+#
+# Orchestrates the 4 Lambdas: cost/security/cleanup run in parallel, then
+# report_generator consumes the aggregated output. Each scanner branch has
+# Retry (MaxAttempts=2, BackoffRate=2.0) + Catch → Pass so a single scanner
+# failure does NOT block the report.
+#
+# The KMS retrofit in this STEP widened the AllowCloudWatchLogsEncrypt Sid
+# to also cover the SFN log group ARN pattern (/aws/vendedlogs/states/...).
+# EventBridge wiring (the 6-hour schedule) lands in STEP 17.
+# -----------------------------------------------------------------------------
+module "step_functions" {
+  source      = "../../modules/step-functions"
+  project     = var.project
+  environment = var.environment
+  kms_key_arn = module.kms.key_arn
+
+  cost_scanner_arn     = module.cost_scanner.function_arn
+  security_scanner_arn = module.security_scanner.function_arn
+  resource_cleanup_arn = module.resource_cleanup.function_arn
+  report_generator_arn = module.report_generator.function_arn
+}

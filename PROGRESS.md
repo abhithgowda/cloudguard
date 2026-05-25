@@ -500,7 +500,7 @@
   - **No tests against `lambda_handler` itself:** the four `lambda_handler` entry points are thin orchestration (env-var reads + helper calls + return summary). The interesting logic lives in the helpers, which are tested directly. End-to-end coverage lands at STEP 20 (live Step Functions execution against a deployed dev stack).
 
 ### ✅ STEP 16 — Build the Step Functions Workflow
-*Completed: 2026-05-25 · Commit: `<filled at commit time>`*
+*Completed: 2026-05-25 · Commit: `b1acf07`*
 
 - **Files written:**
   - `terraform/modules/step-functions/main.tf` — 1 `aws_sfn_state_machine` (STANDARD), 1 `aws_cloudwatch_log_group` (CMK-encrypted, 30-day retention), 1 `aws_iam_role` (assume by `states.amazonaws.com`), 3 `aws_iam_role_policy` (lambda-invoke, vended-logs-delivery, x-ray). ASL written as an HCL object passed through `jsonencode()` so Terraform validates structure and Lambda ARNs interpolate natively.

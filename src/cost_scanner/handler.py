@@ -27,7 +27,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 ce = boto3.client("ce")
-dynamodb = boto3.resource("dynamodb")
 
 
 def lambda_handler(event, context):
@@ -40,16 +39,13 @@ def lambda_handler(event, context):
     logger.info("Fetching cost data %s to %s", start_date, end_date)
     cost_data = get_cost_data(ce, start_date, end_date)
 
-    findings_table = dynamodb.Table(findings_table_name)
-    cost_data_table = dynamodb.Table(cost_data_table_name)
-
-    store_cost_data(cost_data_table, cost_data)
+    store_cost_data(cost_data_table_name, cost_data)
 
     anomalies = detect_anomalies(cost_data, threshold=1.5)
     logger.info("Detected %d anomalies", len(anomalies))
 
     if anomalies:
-        store_findings(findings_table, anomalies)
+        store_findings(findings_table_name, anomalies)
 
     total_daily_cost = sum(
         day_costs.get(end_date.isoformat(), 0.0)

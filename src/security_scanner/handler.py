@@ -25,6 +25,8 @@ from iam_checker import check_iam_users
 from s3_checker import check_s3_buckets
 from sg_checker import check_security_groups
 
+from shared.dynamo_client import batch_put_findings
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -34,7 +36,6 @@ ec2 = boto3.client("ec2")
 s3 = boto3.client("s3")
 iam = boto3.client("iam")
 config = boto3.client("config")
-dynamodb = boto3.resource("dynamodb")
 
 
 def _run_check(name, fn, *args):
@@ -62,19 +63,8 @@ def _stamp_findings(raw_findings):
     return raw_findings
 
 
-def _write_findings(table, findings):
-    """Batch-write findings to DynamoDB. Caller has already stamped IDs."""
-    if not findings:
-        return 0
-    with table.batch_writer() as batch:
-        for f in findings:
-            batch.put_item(Item=f)
-    return len(findings)
-
-
 def lambda_handler(event, context):
     findings_table_name = os.environ["FINDINGS_TABLE"]
-    findings_table = dynamodb.Table(findings_table_name)
 
     sg_findings = _run_check("security_groups", check_security_groups, ec2)
     s3_findings = _run_check("s3_buckets", check_s3_buckets, s3)
@@ -91,7 +81,7 @@ def lambda_handler(event, context):
     for f in all_findings:
         by_severity[f["severity"]] = by_severity.get(f["severity"], 0) + 1
 
-    written = _write_findings(findings_table, all_findings)
+    written = batch_put_findings(findings_table_name, all_findings)
 
     summary = {
         "total_findings": written,

@@ -7,11 +7,12 @@
 
 ## Current Status
 
-- **Last completed STEP:** 14 (Write the Shared Utilities)
-- **Next up:** STEP 15 (Write Unit Tests) — **first sub-task: refactor existing Lambdas to consume `src/shared/`** (see Open TODOs)
+- **Last completed STEP:** 15a (Lambda → shared utilities refactor; STEP 15 itself still in progress)
+- **Next up:** STEP 15b — write the actual unit tests (`tests/test_*.py`)
 - **Last updated:** 2026-05-25
 - **Environment focus:** `dev` (region: `ap-south-1`)
 - **AWS account:** Personal (free tier, own card)
+- **⚠️ New STEP 18 blocker (introduced by 15a):** the Lambda module's `archive_file` zips only `src/<lambda>/`; `src/shared/` is now a hard runtime import dependency. Either STEP 19 (packaging script with `cp -r ../shared ./package/`) must run before STEP 18, or the Lambda module's `source_dir` must point at a pre-populated `package/` dir. Otherwise the deployed Lambdas will `ImportError` on first invocation. See STEP 15a entry below.
 
 ---
 
@@ -438,7 +439,45 @@
   - **No `requirements.txt` for `src/shared/`:** All imports are stdlib (`logging`, `decimal`, `json`, `urllib.request`) or `boto3` (already in every Lambda's requirements). Adding a separate requirements file would just duplicate what each scanner already declares — and the STEP 19 packaging script bundles `shared/` into each scanner's zip alongside its own `requirements.txt`-installed dependencies.
 - **Refactor gap flagged (NEW Open TODO — see below):** The blueprint has no explicit STEP to refactor the 4 existing scanner Lambdas (cost_scanner, security_scanner, resource_cleanup, report_generator) to consume `src/shared/`. They were written in STEPs 10–13 before `shared/` existed, so each inlines its own `batch_writer()` loop, its own `Decimal(str(...))` coercion, its own SNS publish pattern. Recommended slot: first sub-task of STEP 15 (before writing unit tests), so tests cover the refactored code path. Bundled into the Open TODOs list below as **post-STEP 14**.
 
-### ⬜ STEP 15 — Write Unit Tests
+### 🟡 STEP 15 — Write Unit Tests *(in progress — 15a done, 15b pending)*
+
+#### ✅ STEP 15a — Lambda → shared utilities refactor (partial scope)
+*Completed: 2026-05-25*
+
+- **Scope decided (user call):** adopt only `shared.dynamo_client.batch_put_findings` across the 4 Lambdas. The other STEP 14 helpers (`paginate`, `send_sns_alert`, `send_slack_webhook`, `query_findings_by_date`, `query_findings_by_severity`) stay available in `src/shared/` and will be unit-tested in 15b, but are NOT wired into the existing scanners. They're 1-line wrappers that would have been interface theatre — saved no real lines, added an import per call site, and coupled 4 Lambdas to a shared module for no functional gain.
+- **Files written:**
+  - `src/shared/__init__.py` — one-line docstring, makes `shared` a regular package (vs implicit PEP 420 namespace). Required by the STEP 19 packaging script's `cp -r ../shared ./package/` flow so the import path is `from shared.dynamo_client import …`.
+- **Files modified:**
+  - `src/cost_scanner/cost_analyzer.py` — `store_cost_data` and `store_findings` now build complete lists then call `batch_put_findings(table_name, items)`. Removed inline `with table.batch_writer():` blocks, removed manual `Decimal(str(...))` on three fields (helper's recursive `_coerce_decimals` handles it). Removed unused `from decimal import Decimal` import. Signature changed from `(table, ...)` to `(table_name, ...)`.
+  - `src/cost_scanner/handler.py` — removed `dynamodb = boto3.resource("dynamodb")` and the two `dynamodb.Table(...)` lookups; passes env-var strings straight to the refactored helpers.
+  - `src/security_scanner/handler.py` — deleted the local `_write_findings` wrapper, deleted `dynamodb = boto3.resource(...)` + the Table lookup, replaced the call site with `batch_put_findings(findings_table_name, all_findings)`.
+  - `src/resource_cleanup/handler.py` — same shape as security_scanner for the findings write; in `_remediate`, replaced the inline `with remediation_log_table.batch_writer():` with `batch_put_findings(remediation_log_table_name, records)`. Removed the empty-records guard because `batch_put_findings` already no-ops on an empty list.
+- **Latent bug fixed for free:** `resource_cleanup/handler._write_findings` was previously passing `metadata: {"monthly_cost_usd": float, ...}` straight to `batch.put_item`. boto3's DynamoDB resource raises `TypeError: Float types are not supported` on this. The bug never surfaced because STEP 18 (first apply) hasn't run. The refactor's recursive `_coerce_decimals` converts the nested float at the boundary, so the cleanup Lambda will now actually work on first invocation. Verified with a mocked `dynamodb_resource`:
+  ```
+  Type of monthly_cost_usd: Decimal
+  Value: 85.2
+  size_gb stayed int: int
+  PASS — nested float coerced to Decimal recursively
+  ```
+- **Smoke tests (4/4 passed) — venv Python with `PYTHONPATH=['src/<lambda>','src']`:**
+  - `import handler` succeeds for cost_scanner, security_scanner, resource_cleanup, report_generator.
+  - report_generator is intentionally unchanged in 15a — it has no `batch_writer` writes (only Scans for the report-window queries from STEP 13).
+- **Terraform plan:** ✅ `Plan: 41 to add, 0 to change, 0 to destroy.` — Python-only refactor; no IaC diff.
+- **Net LOC saved:** ~30 lines across 4 files. Real win is consistency: three different Decimal-coercion styles (`cost_analyzer` coerced 3 specific fields, `resource_cleanup` coerced nothing, `security_scanner` coerced inline) collapsed to one recursive helper.
+- **Key decisions:**
+  - **Partial refactor over full:** Adopting `paginate` would have saved ~6 lines across security_scanner / resource_cleanup paginators; `send_sns_alert` would have saved ~2 lines in report_generator. Each adoption costs an import line and couples the Lambda to `shared/` at runtime. For helpers that save 1–2 lines, the coupling is interface theatre — keeping the wrappers in place obscures more than it shares. `batch_put_findings` is the exception: it consolidates three drifted Decimal-coercion styles into one recursive helper, fixes a latent float bug, and the call sites have identical shapes across all 4 Lambdas.
+  - **Helper takes table NAME, not Table object:** Forced by `shared.dynamo_client.batch_put_findings`'s signature (which caches the `boto3.resource("dynamodb")` at module scope for warm-invocation reuse). Call-site cleanup is a net win — handlers no longer build Table objects, env-var lookups go straight to the helper.
+  - **`__init__.py` is one line, not implicit namespace package:** Implicit (PEP 420) namespace packages work in Python 3 without `__init__.py`, but the explicit file makes it unambiguous which directories are packages and removes any edge-case risk in the Lambda runtime's importer.
+  - **report_generator deliberately untouched:** It has no batch writes — its DynamoDB access is Scan-only (the documented STEP 13 limit with `Attr("timestamp").gte(cutoff_iso)`). `shared.dynamo_client.query_findings_by_date` could replace `_scan_with_filter`, but the filter expressions are different shapes (report_generator filters on `timestamp` for findings/remediation tables but on `date` for cost_data) — wrapping would require either a generic helper or three calls with different attr names. Defer to 15b as a test-driven decision: if `query_findings_by_date` ends up perfectly mirroring `_scan_with_filter`, refactor; if not, keep them separate.
+- **New blocker for STEP 18 (documented loudly in Current Status):** `archive_file` in the Lambda Terraform module zips only `src/<lambda>/`. After 15a, every Lambda imports from `shared/` which is NOT in the source_dir. The deployed Lambda would fail with `ModuleNotFoundError: No module named 'shared'` on first invocation. Resolution paths:
+  1. **STEP 19 first** — write `scripts/package_lambdas.sh` which does `cp -r ../shared ./package/` plus pip-install, then point the Lambda module's `source_dir` at the pre-built `package/`. This matches the blueprint's STEP 19 intent and PROGRESS's existing STEP 9 decision note.
+  2. **Quick fix in STEP 18** — change the Lambda module to zip a 2-element list of source dirs, or add a `local-exec` provisioner that copies `shared/` before `archive_file` runs.
+  Recommendation: option 1 (STEP 19 first). Update the linear order so STEP 19 runs before STEP 18 — this also matches the natural "package before deploy" mental model better than the blueprint's STEP 18 → STEP 19 ordering.
+
+#### ⬜ STEP 15b — Write the actual unit tests
+- `tests/test_cost_scanner.py`, `tests/test_security_scanner.py`, `tests/test_resource_cleanup.py`, `tests/test_report_generator.py`, `tests/test_shared.py` (covers all 5 shared helpers, including the unused ones).
+- Mock all boto3 with `unittest.mock`. Run via `pytest tests/ -v`.
+
 ### ⬜ STEP 16 — Build the Step Functions Workflow
 ### ⬜ STEP 17 — Build the EventBridge Terraform Module
 ### ⬜ STEP 18 — Wire Everything Together in Dev Environment
@@ -529,6 +568,8 @@
 | 2026-05-25 | `query_findings_by_date` is Scan + FilterExpression on `timestamp` (carry-over of the documented STEP 13 limit) | Findings table PK is `finding_id` (uuid); no GSI has `timestamp` as a partition key, so real Query is not possible against the current schema. Scan is O(table size), acceptable at ≤ few hundred findings/day. Function signature stays the same when a `(environment, timestamp)` GSI lands later | Add the 4th GSI now — premature: GSI costs write amplification on every PutItem to support a query that runs at most twice a day from one consumer (report_generator) |
 | 2026-05-25 | Slack webhook uses stdlib `urllib.request`, not `requests` | Adding `requests` would cost ~100 KB × 4 Lambda zips for a single JSON POST. stdlib `urllib.request` is in every Python runtime. Slack webhook payload is JSON-only, no advanced HTTP features that `requests` would justify | Use `requests` — prettier API but a dependency that propagates to every Lambda's `requirements.txt` for one network call shape |
 | 2026-05-25 | `send_slack_webhook` catches bare `Exception` and returns False — never raises | Slack is a convenience notification channel. The Lambda's durable output is the DynamoDB write or S3 archive. A Slack outage must NOT fail the whole invocation. Same pattern as the SES/SNS error handling in STEP 13's `report_generator/handler.py` | Re-raise on Slack failure — couples a notification-channel issue to the durable write path; one Slack incident fails every scheduled scan in the channel-using environment |
+| 2026-05-25 | STEP 15a: partial refactor — adopt only `batch_put_findings`, leave `paginate` / `send_sns_alert` / `send_slack_webhook` / `query_findings_by_*` unused by existing Lambdas | `batch_put_findings` consolidates 3 drifted Decimal-coercion styles into one recursive helper AND fixes a latent float bug in `resource_cleanup/handler` (boto3 would have raised `TypeError: Float types are not supported` on the first apply because `metadata.monthly_cost_usd` is a float). The other helpers save 1–2 lines per call site at the cost of an import + a runtime coupling — interface theatre. Helpers stay in `shared/`, unit-tested in 15b, available for future Lambdas | Full refactor — adopt all helpers everywhere. Symmetrical and "uses what we built" looks good in the codebase but pays no real dividend and grows the surface that any helper change would have to consider |
+| 2026-05-25 | STEP 15a: `shared.dynamo_client.batch_put_findings` takes a table NAME (string), not a Table object — handlers no longer build Table objects | The helper caches a `boto3.resource("dynamodb")` at module scope for warm-invocation reuse; constructing `.Table(name)` inside the helper avoids leaking the resource handle to callers and matches the test-injection pattern used elsewhere (`dynamodb_resource=Mock()`). Handlers now pass env-var strings directly, removing 2–3 lines per Lambda | Helper takes Table object — symmetrical with old call sites but forces every caller to keep building Table handles, defeating the point of the module-scope cache |
 
 ---
 
@@ -559,14 +600,7 @@
 
 ### 📍 Slotted to existing STEPs
 
-- [ ] **Refactor 4 existing Lambdas to consume `src/shared/`** → **STEP 15 (first sub-task, before writing tests)**. STEPs 10–13 inlined `batch_writer()`, `Decimal(str(...))` coercion, and SNS publish because `shared/` did not yet exist. Doing the refactor first means STEP 15's unit tests target the final code path — testing the duplicated inline code AND the shared utilities, then deleting the duplicates, would mean throwing away tests. Concrete mapping:
-  - `cost_analyzer.store_cost_data` / `store_findings` → `shared.dynamo_client.batch_put_findings`
-  - `security_scanner/handler._batch_write_findings` → `shared.dynamo_client.batch_put_findings`
-  - `resource_cleanup/handler._batch_write` (findings + remediation log) → `shared.dynamo_client.batch_put_findings`
-  - `report_generator/handler._send_sns` → `shared.notification.send_sns_alert`
-  - `report_generator/handler` time-range query of findings/remediation tables → `shared.dynamo_client.query_findings_by_date`
-  - Each Lambda's existing pagination loops (security_scanner's IAM/S3 list calls, resource_cleanup's volume/snapshot describes) → `shared.aws_helpers.paginate` where `can_paginate=True`
-  - Keep `cost_scanner`'s hand-rolled `NextPageToken` loop (Cost Explorer doesn't support `get_paginator` — STEP 14 made `shared.aws_helpers.paginate` raise `ValueError` on this API explicitly).
+- [x] **Refactor 4 existing Lambdas to consume `src/shared/`** → **STEP 15a, completed 2026-05-25 (partial scope).** Adopted only `batch_put_findings` (5 call sites across cost_scanner / security_scanner / resource_cleanup). Other helpers (`paginate`, `send_sns_alert`, `send_slack_webhook`, `query_findings_by_date`, `query_findings_by_severity`) remain in `src/shared/` for future use and will be unit-tested in 15b, but are NOT wired into existing Lambdas — they saved 1–2 lines per call site and adopting them would have been interface theatre. `batch_put_findings` was the high-value adoption: consolidates 3 drifted Decimal-coercion styles into one recursive helper, fixes a latent float bug in `resource_cleanup/handler` that would have crashed the cleanup Lambda on first invocation. See STEP 15a section above for full details, including the **new STEP 18 packaging blocker** the refactor introduced.
 - [ ] **Confirm free tier limits before first `terraform apply`** → **STEP 18 (pre-apply checklist)**. Lambda, DynamoDB, S3, SNS, SES, EventBridge all have free tiers covering CloudGuard's volumes. Step Functions has 4000 free state transitions/month (≥ 30× scan-frequency cap). KMS CMK is $1/month (not free tier) — accepted in STEP 6.
 - [ ] **IAM hardening — scope `ses:SendEmail` to a verified SES identity** → **STEP 18 (IAM module edit, same session as first apply)**. Add `Condition: { StringEquals: { "ses:FromAddress": var.alert_email } }` to the `report_generator` role's `ses:SendEmail` statement. Natural seam — STEP 18 is the first session that runs `terraform apply`, so the constraint is exercised end-to-end immediately. Closes the open TODO carried from STEPs 8 / 11 / 12 / 13.
 - [ ] **IAM hardening — scope destructive EC2 actions with tag-Condition** → **STEP 18 (IAM module edit, same session as SES hardening)**. Add `Condition: { StringEquals: { "ec2:ResourceTag/AutoCleanup": "true" } }` to the `resource_cleanup` role's `ec2:DeleteVolume`, `ec2:ReleaseAddress`, `ec2:DeleteSnapshot` statements. After this, the Lambda can only destroy resources explicitly tagged `AutoCleanup=true` — a single mistagged production volume cannot be deleted even if `AUTO_REMEDIATE=true` and the event flag is set. Three-gate defense (env + event + tag) replaces today's two-gate. Closes the open TODO carried from STEPs 4 / 12.

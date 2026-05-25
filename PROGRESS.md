@@ -442,7 +442,7 @@
 ### 🟡 STEP 15 — Write Unit Tests *(in progress — 15a done, 15b pending)*
 
 #### ✅ STEP 15a — Lambda → shared utilities refactor (partial scope)
-*Completed: 2026-05-25*
+*Completed: 2026-05-25 · Commit: `545fdfc`*
 
 - **Scope decided (user call):** adopt only `shared.dynamo_client.batch_put_findings` across the 4 Lambdas. The other STEP 14 helpers (`paginate`, `send_sns_alert`, `send_slack_webhook`, `query_findings_by_date`, `query_findings_by_severity`) stay available in `src/shared/` and will be unit-tested in 15b, but are NOT wired into the existing scanners. They're 1-line wrappers that would have been interface theatre — saved no real lines, added an import per call site, and coupled 4 Lambdas to a shared module for no functional gain.
 - **Files written:**

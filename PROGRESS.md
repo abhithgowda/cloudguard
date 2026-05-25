@@ -477,7 +477,7 @@
   Recommendation: option 1 (STEP 19 first). Update the linear order so STEP 19 runs before STEP 18 — this also matches the natural "package before deploy" mental model better than the blueprint's STEP 18 → STEP 19 ordering.
 
 #### ✅ STEP 15b — Write the actual unit tests
-*Completed: 2026-05-25*
+*Completed: 2026-05-25 · Commit: `f6fb225`*
 
 - **Files written:**
   - `tests/conftest.py` — wires `sys.path` to mirror the Lambda runtime (each Lambda's source dir + `src/` so `from shared.X import Y` resolves). Loads each Lambda's `handler.py` under a unique module name (`{lambda}_handler`) via `importlib.util.spec_from_file_location` so the 4 same-named `handler.py` files don't clobber each other in `sys.modules`. Autouse fixture resets the module-scope client caches in `shared/*` between tests so a previous test's `Mock()` doesn't leak into the next.

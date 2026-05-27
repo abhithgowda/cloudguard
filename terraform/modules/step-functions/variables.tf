@@ -24,10 +24,8 @@ variable "resource_cleanup_arn" {
   type        = string
 }
 
-variable "report_generator_arn" {
-  description = "ARN of the report_generator Lambda function (from module.report_generator)."
-  type        = string
-}
+# STEP 17.5: report_generator_arn removed — the SFN workflow no longer invokes
+# the report Lambda. Reports are EventBridge-scheduled separately (STEP 17).
 
 variable "kms_key_arn" {
   description = <<-EOT
@@ -94,8 +92,5 @@ variable "scanner_retry_backoff_rate" {
   default     = 2.0
 }
 
-variable "report_retry_max_attempts" {
-  description = "MaxAttempts on the GenerateReport Retry block. Blueprint default = 2."
-  type        = number
-  default     = 2
-}
+# STEP 17.5: report_retry_max_attempts removed — GenerateReport state is no
+# longer part of the workflow.

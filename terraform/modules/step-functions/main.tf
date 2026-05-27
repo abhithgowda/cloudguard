@@ -1,13 +1,23 @@
 # =============================================================================
-# main.tf — Step Functions module (STEP 16)
+# main.tf — Step Functions module (STEP 16, revised in STEP 17.5)
 #
-# Orchestrates the 4 CloudGuard Lambdas as a single state machine:
+# Orchestrates the 3 CloudGuard scanner Lambdas as a single state machine:
 #
 #   ParallelScanners
 #     ├─ CostScanner       (Retry x2, Catch → CostScanFailed)
 #     ├─ SecurityScanner   (Retry x2, Catch → SecurityScanFailed)
 #     └─ ResourceCleanup   (Retry x2, Catch → CleanupFailed)
-#   → GenerateReport       (Retry x2)
+#   (End)
+#
+# STEP 17.5 REVISION — GenerateReport removed from the workflow:
+#   The 6-hourly EventBridge scan_schedule fires this state machine. If
+#   GenerateReport stayed here, the report Lambda would run 4 times per day
+#   and produce CONTENT-IDENTICAL output to the daily 08:00 IST report
+#   (both use a 24-hour findings window). Pure email-noise redundancy.
+#   The fix: scans now silently write findings to DynamoDB; reports are
+#   EventBridge-scheduled separately by the daily (24h) + weekly (168h) rules
+#   in the eventbridge module — they produce meaningfully different content.
+#   See PROGRESS.md STEP 17.5 for the design discussion.
 #
 # Why STANDARD (not EXPRESS):
 #   STANDARD workflows support executions up to 1 year, store complete history
@@ -17,19 +27,19 @@
 #   for debugging (STEP 20).
 #
 # Why ResultPath on ParallelScanners:
-#   Default Parallel output is an array that REPLACES the state input. The
-#   report_generator Lambda reads `event.get("report_window_hours")` — if the
-#   event is an array, `.get()` raises AttributeError. Storing scanner results
-#   under `$.scanner_results` keeps the original input (e.g. `{"report_window_hours": 168}`
-#   from EventBridge in STEP 17) reachable for the report step.
+#   Default Parallel output is an array that REPLACES the state input. Keeping
+#   the parallel results under `$.scanner_results` preserves the original
+#   EventBridge Input (e.g. `{auto_remediate: false, source: "..."}`) for any
+#   downstream inspection in execution history.
 #
 # Why Catch + Pass per branch (not Catch → Fail):
-#   A single scanner failing must NOT block the report. The Pass state emits
-#   `{"status": "FAILED", "scanner": "<name>"}` so the report can render
-#   partial results with a "scanner X failed" banner.
+#   A single scanner failing must NOT abort the rest of the workflow. The Pass
+#   state emits `{"status": "FAILED", "scanner": "<name>"}` so the per-branch
+#   outcome is queryable in execution history.
 #
 # IAM scope:
-#   - lambda:InvokeFunction limited to the 4 known function ARNs (no wildcards).
+#   - lambda:InvokeFunction limited to the 3 scanner Lambda ARNs (no
+#     report_generator — it is no longer invoked from this workflow).
 #   - logs:* needed only for SFN's vended-logs delivery (CreateLogDelivery
 #     and friends) — all account-scoped APIs, can't be resource-scoped.
 #   - xray:* for tracing — same constraint.
@@ -59,14 +69,14 @@ locals {
   #     tuning (prod might want MaxAttempts=3, dev keeps the blueprint's 2).
   # ---------------------------------------------------------------------------
   asl_definition = jsonencode({
-    Comment = "CloudGuard ${var.environment} workflow — parallel scanners, then report."
+    Comment = "CloudGuard ${var.environment} workflow — parallel scanners (silent; reports are EventBridge-scheduled separately, see STEP 17.5)."
     StartAt = "ParallelScanners"
     States = {
       ParallelScanners = {
         Type = "Parallel"
-        # Preserve the original input AND store the scanner outputs alongside
-        # so GenerateReport receives `{report_window_hours, scanner_results}`
-        # instead of just the scanner array.
+        # Preserve the original EventBridge Input at the top level and store
+        # scanner outputs under $.scanner_results — keeps execution history
+        # readable when inspecting payloads in the SFN console.
         ResultPath = "$.scanner_results"
         Branches = [
           # -- Branch 1: Cost scanner --------------------------------------
@@ -157,18 +167,6 @@ locals {
             }
           },
         ]
-        Next = "GenerateReport"
-      }
-      # -- Final state: report generation -----------------------------------
-      GenerateReport = {
-        Type     = "Task"
-        Resource = var.report_generator_arn
-        Retry = [{
-          ErrorEquals     = ["States.ALL"]
-          MaxAttempts     = var.report_retry_max_attempts
-          BackoffRate     = 2.0
-          IntervalSeconds = 1
-        }]
         End = true
       }
     }
@@ -216,7 +214,10 @@ resource "aws_iam_role" "sfn" {
 }
 
 # -----------------------------------------------------------------------------
-# Inline policy 1: lambda:InvokeFunction on EXACTLY the 4 Lambda ARNs.
+# Inline policy 1: lambda:InvokeFunction on EXACTLY the 3 scanner Lambda ARNs.
+#
+# STEP 17.5: report_generator removed — the SFN no longer invokes the report
+# Lambda (reports are EventBridge-scheduled, see PROGRESS.md STEP 17.5).
 #
 # Hard-listing ARNs (rather than `arn:aws:lambda:*:*:function:cloudguard-${env}-*`)
 # means a future Lambda accidentally named cloudguard-dev-anything cannot be
@@ -233,7 +234,7 @@ resource "aws_iam_role_policy" "lambda_invoke" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid    = "InvokeCloudGuardLambdas"
+      Sid    = "InvokeCloudGuardScanners"
       Effect = "Allow"
       Action = ["lambda:InvokeFunction"]
       Resource = [
@@ -243,8 +244,6 @@ resource "aws_iam_role_policy" "lambda_invoke" {
         "${var.security_scanner_arn}:*",
         var.resource_cleanup_arn,
         "${var.resource_cleanup_arn}:*",
-        var.report_generator_arn,
-        "${var.report_generator_arn}:*",
       ]
     }]
   })

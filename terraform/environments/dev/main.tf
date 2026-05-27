@@ -250,3 +250,31 @@ module "step_functions" {
   resource_cleanup_arn = module.resource_cleanup.function_arn
   report_generator_arn = module.report_generator.function_arn
 }
+
+# -----------------------------------------------------------------------------
+# EventBridge module (STEP 17)
+#
+# Three scheduled rules drive the workflow:
+#   - scan_schedule  → state machine, every 6 h, Input = {auto_remediate: false}
+#   - daily_report   → report_generator Lambda, 08:00 IST daily,  window 24 h
+#   - weekly_report  → report_generator Lambda, 08:00 IST Mondays, window 168 h
+#
+# auto_remediate stays false here: this is gate #2 from STEP 12's two-gate
+# design. The Lambda's AUTO_REMEDIATE env var is also false (above), so even
+# if this were flipped, the cleanup Lambda would still refuse. Real
+# remediation requires BOTH gates set, and an operator manually starting
+# the workflow from the console with auto_remediate=true. True async approval
+# (per-resource Approve/Reject links via .waitForTaskToken) is STEP 25.
+# -----------------------------------------------------------------------------
+module "eventbridge" {
+  source      = "../../modules/eventbridge"
+  project     = var.project
+  environment = var.environment
+
+  state_machine_arn  = module.step_functions.state_machine_arn
+  report_lambda_arn  = module.report_generator.function_arn
+  report_lambda_name = module.report_generator.function_name
+
+  # Scheduled scans are dry-run by default. See module docs for details.
+  auto_remediate = false
+}

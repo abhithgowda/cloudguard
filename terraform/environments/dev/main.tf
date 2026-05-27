@@ -228,16 +228,20 @@ module "report_generator" {
 }
 
 # -----------------------------------------------------------------------------
-# Step Functions module (STEP 16)
+# Step Functions module (STEP 16, revised in STEP 17.5)
 #
-# Orchestrates the 4 Lambdas: cost/security/cleanup run in parallel, then
-# report_generator consumes the aggregated output. Each scanner branch has
-# Retry (MaxAttempts=2, BackoffRate=2.0) + Catch → Pass so a single scanner
-# failure does NOT block the report.
+# Orchestrates the 3 scanner Lambdas: cost/security/cleanup run in parallel.
+# Each scanner branch has Retry (MaxAttempts=2, BackoffRate=2.0) + Catch → Pass
+# so a single scanner failure does NOT abort the workflow.
 #
-# The KMS retrofit in this STEP widened the AllowCloudWatchLogsEncrypt Sid
-# to also cover the SFN log group ARN pattern (/aws/vendedlogs/states/...).
-# EventBridge wiring (the 6-hour schedule) lands in STEP 17.
+# STEP 17.5 revision: GenerateReport state was removed from the SFN. The
+# 6-hourly scan_schedule was producing content-identical 24h-window reports
+# to the daily EventBridge report rule (both use the same window). Reports
+# now arrive only on the daily + weekly EventBridge schedules — the SFN
+# writes findings to DynamoDB silently. See PROGRESS.md STEP 17.5.
+#
+# The KMS retrofit in STEP 16 widened the AllowCloudWatchLogsEncrypt Sid
+# to cover the SFN log group ARN pattern (/aws/vendedlogs/states/...).
 # -----------------------------------------------------------------------------
 module "step_functions" {
   source      = "../../modules/step-functions"
@@ -248,7 +252,6 @@ module "step_functions" {
   cost_scanner_arn     = module.cost_scanner.function_arn
   security_scanner_arn = module.security_scanner.function_arn
   resource_cleanup_arn = module.resource_cleanup.function_arn
-  report_generator_arn = module.report_generator.function_arn
 }
 
 # -----------------------------------------------------------------------------

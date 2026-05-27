@@ -128,3 +128,29 @@ output "step_functions_log_group_name" {
   description = "CloudWatch log group receiving SFN execution logs (CMK-encrypted, 30-day retention)."
   value       = module.step_functions.log_group_name
 }
+
+# -----------------------------------------------------------------------------
+# EventBridge outputs (STEP 17)
+# -----------------------------------------------------------------------------
+output "eventbridge_rule_names" {
+  description = "Names of all 3 EventBridge rules: periodic scan + daily + weekly report."
+  value = {
+    scan_schedule = module.eventbridge.scan_rule_name
+    daily_report  = module.eventbridge.daily_report_rule_name
+    weekly_report = module.eventbridge.weekly_report_rule_name
+  }
+}
+
+output "eventbridge_rule_arns" {
+  description = "ARNs of all 3 EventBridge rules."
+  value = {
+    scan_schedule = module.eventbridge.scan_rule_arn
+    daily_report  = module.eventbridge.daily_report_rule_arn
+    weekly_report = module.eventbridge.weekly_report_rule_arn
+  }
+}
+
+output "eventbridge_role_arn" {
+  description = "ARN of the IAM role EventBridge assumes to start Step Functions executions."
+  value       = module.eventbridge.role_arn
+}

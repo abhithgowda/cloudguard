@@ -540,7 +540,7 @@
 - **Interview Prep Note:** "Why Step Functions instead of chaining Lambdas with SNS/SQS?" — chaining via SNS gives you fan-out but loses orchestration: no retry policy per step, no central failure visualisation, no parallel-with-aggregate semantics, no per-state input/output transformation. Step Functions gives you all four with one declarative ASL. The cost is per-state-transition billing (cheap at our scale) and being locked into AWS. Also be ready to explain (a) Parallel state's ResultPath behaviour and why we use `$.scanner_results`, (b) why each branch has Catch → Pass rather than Catch → Fail (partial results > all-or-nothing), (c) why STANDARD over EXPRESS for this workflow, (d) the difference between SFN's Retry block and a Lambda's reserved-concurrent-executions cap.
 
 ### ✅ STEP 17 — Build the EventBridge Terraform Module
-*Completed: 2026-05-27 · Commit: `<pending>`*
+*Completed: 2026-05-27 · Commit: `32c9b54`*
 
 - **Files written:**
   - `terraform/modules/eventbridge/main.tf` — 3 × `aws_cloudwatch_event_rule` (scan_schedule, daily_report, weekly_report), 3 × `aws_cloudwatch_event_target`, 1 × `aws_iam_role` (`events.amazonaws.com` trust), 1 × `aws_iam_role_policy` (`states:StartExecution` on the one state machine ARN), 2 × `aws_lambda_permission` (resource-based perms allowing each Lambda-targeted rule to invoke `report_generator`).

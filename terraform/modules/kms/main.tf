@@ -260,7 +260,7 @@ data "aws_iam_policy_document" "kms_key_policy" {
 #                             replicas/DR; we deploy a single region.
 # =============================================================================
 resource "aws_kms_key" "main" {
-  description             = "CloudGuard ${var.environment} shared CMK — DynamoDB, S3, SNS envelope encryption"
+  description             = "CloudGuard ${var.environment} shared CMK - DynamoDB, S3, SNS envelope encryption"
   key_usage               = "ENCRYPT_DECRYPT"
   enable_key_rotation     = true
   deletion_window_in_days = 30

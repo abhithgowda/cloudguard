@@ -45,7 +45,7 @@ resource "aws_s3_bucket" "reports" {
 
   tags = {
     Name    = local.reports_bucket
-    Purpose = "CloudGuard HTML/CSV reports — output of report_generator Lambda"
+    Purpose = "CloudGuard HTML/CSV reports - output of report_generator Lambda"
   }
 }
 

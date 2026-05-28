@@ -34,7 +34,7 @@ resource "aws_sns_topic" "alerts" {
 
   tags = {
     Name    = local.topic_name
-    Purpose = "CloudGuard alert fan-out — cost, security, cleanup, report-generator notifications"
+    Purpose = "CloudGuard alert fan-out for cost / security / cleanup / report-generator notifications"
   }
 }
 
@@ -87,7 +87,26 @@ data "aws_iam_policy_document" "topic_policy" {
       identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
 
-    actions   = ["sns:*"]
+    # SNS rejects "sns:*" in topic policies ("Policy statement action out of
+    # service scope!") because the wildcard expands to include account-level
+    # actions like sns:CreateTopic / sns:ListTopics that aren't topic-scoped.
+    # Enumerate the topic-scoped actions explicitly. This is the full list of
+    # actions that operate against a topic ARN (AWS SNS API reference, 2026).
+    actions = [
+      "sns:AddPermission",
+      "sns:DeleteTopic",
+      "sns:GetDataProtectionPolicy",
+      "sns:GetTopicAttributes",
+      "sns:ListSubscriptionsByTopic",
+      "sns:ListTagsForResource",
+      "sns:Publish",
+      "sns:PutDataProtectionPolicy",
+      "sns:RemovePermission",
+      "sns:SetTopicAttributes",
+      "sns:Subscribe",
+      "sns:TagResource",
+      "sns:UntagResource",
+    ]
     resources = [aws_sns_topic.alerts.arn]
   }
 

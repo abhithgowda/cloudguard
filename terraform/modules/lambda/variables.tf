@@ -93,9 +93,9 @@ variable "layers" {
 # Concurrency, tracing, encryption
 # -----------------------------------------------------------------------------
 variable "reserved_concurrent_executions" {
-  description = "Cap on concurrent executions of this function. Default 5: a misfiring EventBridge schedule cannot create a runaway bill. -1 disables the cap (Lambda's default unbounded behaviour)."
+  description = "Cap on concurrent executions of this function. Default -1 (no reservation) because new AWS accounts have a total concurrency quota of 10 and reserving any amount per-function would push UnreservedConcurrentExecutions below 10 (AWS-enforced floor). The account-wide quota itself is the runaway-bill cap; once the quota is raised, set this per-function to a small positive number (e.g. 5) to restore the per-function safety rail."
   type        = number
-  default     = 5
+  default     = -1
 }
 
 variable "tracing_mode" {

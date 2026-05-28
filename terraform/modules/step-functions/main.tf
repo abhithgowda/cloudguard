@@ -69,7 +69,7 @@ locals {
   #     tuning (prod might want MaxAttempts=3, dev keeps the blueprint's 2).
   # ---------------------------------------------------------------------------
   asl_definition = jsonencode({
-    Comment = "CloudGuard ${var.environment} workflow — parallel scanners (silent; reports are EventBridge-scheduled separately, see STEP 17.5)."
+    Comment = "CloudGuard ${var.environment} workflow - parallel scanners (silent; reports are EventBridge-scheduled separately, see STEP 17.5)."
     StartAt = "ParallelScanners"
     States = {
       ParallelScanners = {
@@ -201,7 +201,7 @@ resource "aws_cloudwatch_log_group" "sfn" {
 # =============================================================================
 resource "aws_iam_role" "sfn" {
   name        = local.role_name
-  description = "Role for CloudGuard ${var.environment} Step Functions state machine — invokes 4 Lambdas, delivers logs + X-Ray."
+  description = "Role for CloudGuard ${var.environment} Step Functions state machine - invokes 4 Lambdas, delivers logs + X-Ray."
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

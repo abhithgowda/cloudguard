@@ -66,7 +66,7 @@ locals {
 # =============================================================================
 resource "aws_iam_role" "cost_scanner" {
   name               = "${local.name_prefix}-cost-scanner-role"
-  description        = "Role for CloudGuard cost scanner Lambda — reads Cost Explorer, writes findings."
+  description        = "Role for CloudGuard cost scanner Lambda - reads Cost Explorer, writes findings."
   assume_role_policy = local.lambda_assume_role_policy
 }
 
@@ -130,7 +130,7 @@ resource "aws_iam_role_policy_attachment" "cost_scanner_basic" {
 # =============================================================================
 resource "aws_iam_role" "security_scanner" {
   name               = "${local.name_prefix}-security-scanner-role"
-  description        = "Role for CloudGuard security scanner Lambda — reads SG, S3, IAM, Config."
+  description        = "Role for CloudGuard security scanner Lambda - reads SG, S3, IAM, Config."
   assume_role_policy = local.lambda_assume_role_policy
 }
 
@@ -227,7 +227,7 @@ resource "aws_iam_role_policy_attachment" "security_scanner_basic" {
 # =============================================================================
 resource "aws_iam_role" "resource_cleanup" {
   name               = "${local.name_prefix}-resource-cleanup-role"
-  description        = "Role for CloudGuard cleanup Lambda — describes and deletes zombie EC2 resources."
+  description        = "Role for CloudGuard cleanup Lambda - describes and deletes zombie EC2 resources."
   assume_role_policy = local.lambda_assume_role_policy
 }
 
@@ -292,7 +292,7 @@ resource "aws_iam_role_policy_attachment" "resource_cleanup_basic" {
 # =============================================================================
 resource "aws_iam_role" "report_generator" {
   name               = "${local.name_prefix}-report-generator-role"
-  description        = "Role for CloudGuard report generator Lambda — queries findings, writes reports."
+  description        = "Role for CloudGuard report generator Lambda - queries findings, writes reports."
   assume_role_policy = local.lambda_assume_role_policy
 }
 

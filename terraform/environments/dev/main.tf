@@ -133,10 +133,12 @@ module "sns" {
 #   - reserved_concurrent_executions = 5 (default) to cap runaway-bill risk
 #   - X-Ray active tracing (default) for per-Lambda timeline in Step Functions
 #
-# source_dir paths are relative to path.root (= terraform/environments/dev/).
-# The src/ directories currently hold STEP 2 stubs; STEPs 10-13 will fill them
-# with real Python. archive_file re-hashes on every plan, so a code change
-# auto-flows through to a new source_code_hash without touching this file.
+# source_dir paths point at src/<lambda>/build/ — populated by
+# scripts/package_lambdas.sh (or .ps1) per STEP 19. The build/ directory
+# contains the Lambda's own .py files PLUS a copy of src/shared/, so the
+# runtime import `from shared.dynamo_client import ...` resolves.
+# archive_file re-hashes build/ on every plan, so a code change auto-flows
+# through to a new source_code_hash AFTER the packaging script has run.
 # -----------------------------------------------------------------------------
 module "cost_scanner" {
   source        = "../../modules/lambda"
@@ -144,7 +146,7 @@ module "cost_scanner" {
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-cost-scanner"
   role_arn      = module.iam.cost_scanner_role_arn
-  source_dir    = "${path.root}/../../../src/cost_scanner"
+  source_dir    = "${path.root}/../../../src/cost_scanner/build"
   kms_key_arn   = module.kms.key_arn
 
   environment_variables = {
@@ -162,7 +164,7 @@ module "security_scanner" {
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-security-scanner"
   role_arn      = module.iam.security_scanner_role_arn
-  source_dir    = "${path.root}/../../../src/security_scanner"
+  source_dir    = "${path.root}/../../../src/security_scanner/build"
   kms_key_arn   = module.kms.key_arn
 
   environment_variables = {
@@ -179,7 +181,7 @@ module "resource_cleanup" {
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-resource-cleanup"
   role_arn      = module.iam.resource_cleanup_role_arn
-  source_dir    = "${path.root}/../../../src/resource_cleanup"
+  source_dir    = "${path.root}/../../../src/resource_cleanup/build"
   kms_key_arn   = module.kms.key_arn
 
   environment_variables = {
@@ -201,7 +203,7 @@ module "report_generator" {
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-report-generator"
   role_arn      = module.iam.report_generator_role_arn
-  source_dir    = "${path.root}/../../../src/report_generator"
+  source_dir    = "${path.root}/../../../src/report_generator/build"
   kms_key_arn   = module.kms.key_arn
 
   # Report generator runs once at the end of the workflow — give it more

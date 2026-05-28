@@ -598,7 +598,7 @@
 - **Interview Prep Note:** "Why doesn't your Step Functions workflow include the report step like every architecture diagram online suggests?" — Because the workflow is **schedule-driven, not on-demand**. A 6-hourly scan that ALSO emails a report produces 4 daily content-identical emails next to the one I actually want at 08:00 IST. The right separation is: SFN owns the scan (writes findings to DynamoDB → durable, queryable), EventBridge owns the report cadence (daily 24h + weekly 168h windows → meaningfully different content per rule). This makes the scan's failure semantics simpler (no fan-out to a noisy notification on every cron tick) and lets reports be re-run idempotently against historical data without re-running the scanners. Trade-off: I lose "fresh report immediately after a manual scan" — if I need that, I invoke `report_generator` directly from the Console or add a synchronous `.waitForTaskToken` step gated by the EventBridge `source` field. Also be ready to explain: (a) why `Plan: 57 to add` stayed flat despite the cleanup (content-only edit to existing resources), (b) why I kept the weekly rule (different window = different content; daily is a strict subset of weekly), (c) why this is a STEP 17.5 sub-step rather than a STEP 18 hotfix (caught BEFORE first apply — cleanest moment to fix).
 
 ### ✅ STEP 19 — Create the Lambda Packaging Script
-*Completed: 2026-05-28 · Commit: `<pending>`*
+*Completed: 2026-05-28 · Commit: `35283a3`*
 
 - **Files written:**
   - `scripts/package_lambdas.sh` — bash, for STEP 21 CI on `ubuntu-latest`. Resolves the repo root from `$BASH_SOURCE` so cwd doesn't matter. For each of the 4 Lambdas: clean `src/<lambda>/build/`, copy `*.py`, copy `src/shared/`, strip `__pycache__/`.

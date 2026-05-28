@@ -638,7 +638,7 @@
 - **Interview Prep Note:** "How does your Lambda code actually get into AWS?" — Three players. (1) `scripts/package_lambdas.{sh,ps1}` is the *vendoring* step — it pre-copies `src/shared/` into each Lambda's `build/` directory so the package is self-contained. No pip-install — boto3 is in the Lambda runtime. (2) Terraform's `archive_file` data source zips `build/` at plan time and computes a SHA256; that hash is wired to `aws_lambda_function.source_code_hash`. (3) `terraform apply` calls the AWS Lambda `UpdateFunctionCode` API with the zip bytes. So edit `.py` → run script → `terraform plan` shows source_code_hash diff → `terraform apply` uploads. The honest design call here is the `build/` indirection: it exists *only* because `archive_file` zips one directory and our Lambdas import from a sibling package. Be ready to defend skipping `pip install -r requirements.txt` (boto3 already in runtime, 15 MB×4 of dead bytes) — and to defend why we don't use a Lambda layer for `shared/` (one layer per Lambda is overkill at this scale, vendoring is simpler and the cold-start cost of a 4 KB module is unmeasurable).
 
 ### ✅ STEP 18 — Wire Everything Together in Dev Environment (FIRST `terraform apply`)
-*Completed: 2026-05-28 · Commit: TBD (this session)*
+*Completed: 2026-05-28 · Commit: `c8d668d`*
 
 - **The moment:** First time CloudGuard infrastructure exists in AWS. The plan that had been sitting at "57 to add, 0 to change, 0 to destroy" since STEP 17.5 is now applied — 57 managed resources live in account `810278669055`, region `ap-south-1`.
 - **Procedure followed:**

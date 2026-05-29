@@ -752,7 +752,7 @@
 ### ⬜ STEP 18.5 — IAM Hardening Pass (`ses:FromAddress` condition + EC2 destructive-action tag condition) *(slotted from Open TODOs, 2026-05-28 — see Slotting Policy)*
 
 ### ✅ STEP 21 — Build the CI/CD Pipeline (with OIDC federation + Checkov hard-fail + STEP 20 Bug #2 fix)
-*Completed: 2026-05-29 · Commit: `<pending — recorded after commit>`*
+*Completed: 2026-05-29 · Commit: `a135280`*
 
 - **Scope:** CI workflow (`ci.yml`), Deploy workflow (`deploy.yml`), GitHub Actions OIDC trust into AWS, Checkov security scan with documented suppression list, AND the `MIN_ANOMALY_DOLLARS` cost-detector floor surfaced as the deferred STEP 20 Bug #2.
 - **Files written:**

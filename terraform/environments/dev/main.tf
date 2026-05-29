@@ -155,6 +155,10 @@ module "cost_scanner" {
     SNS_TOPIC_ARN   = module.sns.topic_arn
     ENVIRONMENT     = var.environment
     LOG_LEVEL       = "INFO"
+    # Absolute-dollar floor on the latest day's cost. Without it, microscopic
+    # spend (e.g. $0.00001 → $0.0009 = 90x ratio) gets flagged HIGH — the
+    # false-positive that surfaced on the first live run (STEP 20 Bug #2).
+    MIN_ANOMALY_DOLLARS = "1.0"
   }
 }
 
@@ -282,4 +286,28 @@ module "eventbridge" {
 
   # Scheduled scans are dry-run by default. See module docs for details.
   auto_remediate = false
+}
+
+# -----------------------------------------------------------------------------
+# GitHub Actions OIDC module (STEP 21)
+#
+# Replaces long-lived AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY in GitHub repo
+# secrets with branch-scoped, short-lived (~1h) credentials minted via OIDC
+# federation. CI assumes the plan role; deploy.yml assumes the deploy role,
+# which is locked to the `main` branch via the trust policy's `sub` condition.
+#
+# Account-global gotcha: aws_iam_openid_connect_provider is unique per AWS
+# account. If a future prod environment lives in the SAME account, this
+# resource must move to a shared bootstrap state (or be looked up via `data`)
+# to avoid a "provider already exists" error on prod apply. Separate accounts
+# per environment (the recommended pattern) sidesteps the issue.
+# -----------------------------------------------------------------------------
+module "github_oidc" {
+  source            = "../../modules/github_oidc"
+  project           = var.project
+  environment       = var.environment
+  github_org        = var.github_org
+  github_repo       = var.github_repo
+  state_bucket_name = var.state_bucket_name
+  deploy_branch     = "main"
 }

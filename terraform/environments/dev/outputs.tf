@@ -154,3 +154,30 @@ output "eventbridge_role_arn" {
   description = "ARN of the IAM role EventBridge assumes to start Step Functions executions."
   value       = module.eventbridge.role_arn
 }
+
+# -----------------------------------------------------------------------------
+# GitHub Actions OIDC outputs (STEP 21)
+#
+# After `terraform apply`, paste these ARNs into GitHub:
+#   Repo Settings → Secrets and variables → Actions → Variables tab:
+#     AWS_PLAN_ROLE_ARN   = <plan_role_arn output>
+#     AWS_DEPLOY_ROLE_ARN = <deploy_role_arn output>
+#   AWS_REGION = "ap-south-1"  (or hardcode in the workflows — your call)
+#
+# These are VARIABLES not SECRETS — role ARNs are not sensitive; the security
+# boundary is the trust policy, not the ARN itself.
+# -----------------------------------------------------------------------------
+output "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC provider in this AWS account."
+  value       = module.github_oidc.oidc_provider_arn
+}
+
+output "github_plan_role_arn" {
+  description = "Role for CI: terraform plan + ReadOnlyAccess + state-bucket write. Set as AWS_PLAN_ROLE_ARN in GitHub repo variables."
+  value       = module.github_oidc.plan_role_arn
+}
+
+output "github_deploy_role_arn" {
+  description = "Role for deploy: terraform apply + AdministratorAccess. Assumable ONLY from the main branch via the trust policy. Set as AWS_DEPLOY_ROLE_ARN in GitHub repo variables."
+  value       = module.github_oidc.deploy_role_arn
+}

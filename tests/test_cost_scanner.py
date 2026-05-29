@@ -100,6 +100,52 @@ class TestDetectAnomalies:
         # avg_cost <= 0 guard — confirming the exclusion path.
         assert anomalies == []
 
+    def test_detect_anomalies_skips_microscopic_costs(self):
+        # STEP 20 Bug #2: a personal account with $0.00001 baseline S3 spend
+        # and a $0.0009 spike-day was flagged HIGH at ratio=90x. The absolute
+        # dollar value is operationally noise. Floor at $1 (default) suppresses.
+        cost_data = {
+            "Amazon S3": {
+                f"2026-05-{day:02d}": 0.00001 for day in range(1, 30)
+            },
+        }
+        cost_data["Amazon S3"]["2026-05-30"] = 0.0009
+
+        anomalies = cost_analyzer.detect_anomalies(cost_data)
+
+        assert anomalies == []
+
+    def test_custom_floor_allows_small_but_real_anomaly_through(self):
+        # The floor is a knob, not a hard veto. Lowering it via the parameter
+        # (env var MIN_ANOMALY_DOLLARS in production) lets small-but-real
+        # anomalies surface — useful in lower-spend dev accounts.
+        cost_data = {
+            "Amazon S3": {f"2026-05-{d:02d}": 0.05 for d in range(1, 30)},
+        }
+        cost_data["Amazon S3"]["2026-05-30"] = 0.50  # 10x at $0.50
+
+        # Default floor ($1.00) suppresses it.
+        assert cost_analyzer.detect_anomalies(cost_data) == []
+
+        # Custom $0.10 floor lets it through.
+        anomalies = cost_analyzer.detect_anomalies(cost_data, min_dollars=0.10)
+        assert len(anomalies) == 1
+        assert anomalies[0]["service"] == "Amazon S3"
+
+    def test_floor_zero_disables_the_filter(self):
+        # min_dollars=0 must restore pre-fix behaviour for callers that
+        # explicitly opt out (e.g. tests, or an env where every cent matters).
+        cost_data = {
+            "Amazon S3": {
+                f"2026-05-{day:02d}": 0.00001 for day in range(1, 30)
+            },
+        }
+        cost_data["Amazon S3"]["2026-05-30"] = 0.0009
+
+        anomalies = cost_analyzer.detect_anomalies(cost_data, min_dollars=0)
+
+        assert len(anomalies) == 1
+
     def test_multiple_services_independent(self):
         cost_data = {
             "Service-A": {f"2026-05-{d:02d}": 1.0 for d in range(1, 30)},

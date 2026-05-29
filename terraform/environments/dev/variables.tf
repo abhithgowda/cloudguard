@@ -43,6 +43,24 @@ variable "report_window_hours" {
   }
 }
 
+variable "github_org" {
+  description = "GitHub org or user that owns the cloudguard repo. Used by the github_oidc module to scope the trust policy of the plan + deploy roles."
+  type        = string
+  default     = "abhithcogni"
+}
+
+variable "github_repo" {
+  description = "GitHub repository name. Used by the github_oidc module's trust policy `sub` condition."
+  type        = string
+  default     = "cloudguard"
+}
+
+variable "state_bucket_name" {
+  description = "Name of the S3 bucket holding the Terraform remote state for this environment. Passed to the github_oidc module so the plan role can acquire S3 native locks."
+  type        = string
+  default     = "cloudguard-tf-state-abhithcogni"
+}
+
 variable "bucket_suffix" {
   description = "Globally-unique suffix appended to S3 bucket names. S3 bucket names share one namespace across every AWS account on Earth — without a suffix, 'cloudguard-dev-reports' would collide with anyone else who picked the same name. Set this in the gitignored terraform.tfvars (e.g. your GitHub handle) so it stays out of source control."
   type        = string

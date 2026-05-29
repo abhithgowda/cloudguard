@@ -106,6 +106,7 @@ resource "aws_iam_role_policy" "cost_scanner" {
         Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
+          "dynamodb:BatchWriteItem",
           "dynamodb:Query"
         ]
         Resource = [
@@ -199,7 +200,7 @@ resource "aws_iam_role_policy" "security_scanner" {
       {
         Sid    = "DynamoDBWriteFindings"
         Effect = "Allow"
-        Action = ["dynamodb:PutItem"]
+        Action = ["dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [
           local.findings_table_arn,
           "${local.findings_table_arn}/index/*"
@@ -264,7 +265,7 @@ resource "aws_iam_role_policy" "resource_cleanup" {
       {
         Sid    = "DynamoDBWriteFindingsAndRemediation"
         Effect = "Allow"
-        Action = ["dynamodb:PutItem"]
+        Action = ["dynamodb:PutItem", "dynamodb:BatchWriteItem"]
         Resource = [
           local.findings_table_arn,
           local.remediation_log_arn,

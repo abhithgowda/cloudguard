@@ -1,0 +1,144 @@
+# =============================================================================
+# .checkov.yaml — STEP 21
+#
+# Hard-fail on any unsuppressed finding (CI job .github/workflows/ci.yml does
+# not set soft_fail). Each suppression below has a one-line justification.
+#
+# Triaged against Checkov 3.2.530 on 2026-05-29 — 224 passed, 19 failed. All
+# 19 are suppressed below. Re-triage after any module change.
+#
+# Run locally:
+#   cloudguard-env/Scripts/python -m checkov.main --config-file .checkov.yaml
+# =============================================================================
+
+directory:
+  - terraform/
+
+framework:
+  - terraform
+
+quiet: true
+compact: true
+download-external-modules: false
+
+# -----------------------------------------------------------------------------
+# Suppressed checks — alphabetized by CKV ID. Each entry MUST have a comment
+# pointing at the documented decision. If a suppression turns out wrong,
+# DELETE the entry (git history is the audit trail) — don't comment it out.
+# -----------------------------------------------------------------------------
+skip-check:
+  # CKV_AWS_111 — IAM policy allows write access without constraints.
+  # Fires on: module.kms.aws_iam_policy_document.kms_key_policy
+  # Justified: the KMS root-admin statement (`kms:*` for the root principal)
+  # is AWS-mandated lockout protection. Same root cause as CKV_AWS_109.
+  - CKV_AWS_111
+
+  # CKV_AWS_116 — Lambda has a Dead Letter Queue configured.
+  # Fires on: all 4 cloudguard-dev-* Lambdas.
+  # Justified: failure handling lives in Step Functions (STEP 16 — Catch +
+  # Pass branches mark a scanner as FAILED in the parallel result without
+  # tearing the whole workflow down). The findings table is the durable
+  # record. A per-Lambda DLQ would duplicate that responsibility. Revisit
+  # if EventBridge starts invoking Lambdas outside the SFN context where
+  # SFN's Catch isn't in play.
+  - CKV_AWS_116
+
+  # CKV_AWS_117 — Lambda is configured inside a VPC.
+  # Fires on: all 4 cloudguard-dev-* Lambdas.
+  # Justified: every CloudGuard Lambda only calls AWS APIs (boto3) over the
+  # public AWS endpoints over TLS. Putting them in a VPC would require a
+  # NAT gateway (~$30/month) and VPC endpoints for every called service
+  # for zero security benefit. Revisit if a future scanner needs to reach
+  # a customer-VPC resource directly.
+  - CKV_AWS_117
+
+  # CKV_AWS_145 — S3 bucket encrypted with KMS by default.
+  # Fires on: module.s3.aws_s3_bucket.logs (NOT the reports bucket — that
+  # one IS SSE-KMS with the shared CMK).
+  # Justified: the logs bucket uses SSE-S3 by design. STEP 7 decision — S3
+  # access-log delivery is performed by the `logging.s3.amazonaws.com`
+  # service principal; routing through KMS would require an extra grant on
+  # the CMK for what is log metadata containing no payload data.
+  - CKV_AWS_145
+
+  # CKV_AWS_274 — Disallow IAM roles using AdministratorAccess managed policy.
+  # Fires on: module.github_oidc.aws_iam_role_policy_attachment.deploy_admin
+  # Justified: github_deploy role uses AdministratorAccess as a pragmatic
+  # dev-only choice. The branch-scoped trust policy (only refs/heads/main
+  # can assume via OIDC) is the security boundary — a PR cannot escalate.
+  # Open TODO in the github_oidc module: replace with a service-scoped
+  # custom policy covering only what CloudGuard manages (IAM, KMS,
+  # DynamoDB, S3, SNS, Lambda, States, Events, Logs).
+  - CKV_AWS_274
+
+  # CKV2_AWS_62 — S3 bucket has event notifications enabled.
+  # Fires on: reports bucket + logs bucket.
+  # Justified: report deliveries are pull-based (presigned URL in the
+  # email) and the cost/security/cleanup flow is event-driven on
+  # EventBridge, not on S3 events. Adding bucket notifications would
+  # create a third event path with no consumer.
+  - CKV2_AWS_62
+
+  # CKV_AWS_109 — IAM policy allows permissions-management without constraints.
+  # Fires on: module.kms.aws_iam_policy_document.kms_key_policy
+  # Justified: the KMS key policy includes the AWS-mandated `kms:*` for the
+  # root account principal — without it you can lock yourself out of the
+  # key. This is the AWS-recommended pattern and the alternative is data
+  # loss. STEP 6 records the decision.
+  - CKV_AWS_109
+
+  # CKV_AWS_144 — S3 bucket has cross-region replication.
+  # Fires on: module.s3.aws_s3_bucket.reports, module.s3.aws_s3_bucket.logs
+  # Justified: dev environment in a single region (ap-south-1) by design.
+  # Cross-region replication would add ~$0.02/GB-month plus replication
+  # bandwidth, and reports are reproducible from DynamoDB anyway. Revisit
+  # for prod where the reports bucket becomes an audit artefact.
+  - CKV_AWS_144
+
+  # CKV_AWS_272 — Lambda has code-signing configured.
+  # Fires on: all 4 cloudguard-dev-* Lambdas.
+  # Justified: code-signing requires aws_signer_signing_profile + signer
+  # profile permission grants — overkill for a single-developer dev account
+  # whose deploy path is OIDC-protected GitHub Actions. The deploy role's
+  # branch-scoped trust policy is the equivalent control (only main can
+  # apply). Revisit for prod where multiple parties may push to the deploy
+  # branch.
+  - CKV_AWS_272
+
+  # CKV_AWS_290 — IAM policy allows write access without constraints.
+  # Fires on: resource_cleanup (ec2:DeleteVolume / ReleaseAddress /
+  # DeleteSnapshot on `*`), report_generator (ses:SendEmail on `*`).
+  # Justified: both are documented hardening TODOs — STEP 12 (tag-Condition
+  # on cleanup destroys) and STEP 13 (ses:FromAddress Condition on
+  # SendEmail). Tracked as STEP 18.5 in PROGRESS.md. The destructive
+  # actions are gated by the two-gate auto-remediate model (env var AND
+  # event input must BOTH opt in) — code-level mitigation while the IAM
+  # tightening is pending.
+  - CKV_AWS_290
+
+  # CKV_AWS_338 — CloudWatch log groups retain logs for at least 1 year.
+  # Fires on: all 4 Lambda log groups + SFN log group.
+  # Justified: 30-day retention is a deliberate cost choice (STEP 9). At
+  # the data volumes CloudGuard produces, 365-day retention would cost ~5x
+  # for telemetry that's only useful for debugging the last few runs.
+  # Production should be 90-365 days depending on compliance regime.
+  - CKV_AWS_338
+
+  # CKV_AWS_355 — IAM policy uses `*` resource for restrictable actions.
+  # Fires on: cost_scanner, security_scanner, resource_cleanup,
+  # report_generator role policies.
+  # Justified: every CloudGuard Lambda role contains at least one
+  # statement on `Resource = "*"` because the underlying AWS actions
+  # (ce:GetCostAndUsage, ec2:Describe*, iam:List*, rds:DescribeDBInstances,
+  # ses:SendEmail, config:*) do NOT support resource-level permissions per
+  # the AWS docs. Where AWS DOES support it (DynamoDB, S3, SNS) the
+  # policies scope to specific ARNs.
+  - CKV_AWS_355
+
+  # CKV_AWS_356 — Same family as 355 but for permissions-management actions.
+  # Fires on: module.kms.aws_iam_policy_document.kms_key_policy.
+  # Justified: same root-account `kms:*` statement as CKV_AWS_109 above.
+  # The KMS key policy syntax requires Resource = "*" — a key policy
+  # always applies to the key it's attached to, the Resource field is a
+  # structural placeholder, not a permission scope.
+  - CKV_AWS_356

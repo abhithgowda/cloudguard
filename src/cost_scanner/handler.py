@@ -32,6 +32,7 @@ ce = boto3.client("ce")
 def lambda_handler(event, context):
     findings_table_name = os.environ["FINDINGS_TABLE"]
     cost_data_table_name = os.environ["COST_DATA_TABLE"]
+    min_anomaly_dollars = float(os.environ.get("MIN_ANOMALY_DOLLARS", "1.0"))
 
     end_date = date.today()
     start_date = end_date - timedelta(days=30)
@@ -41,8 +42,14 @@ def lambda_handler(event, context):
 
     store_cost_data(cost_data_table_name, cost_data)
 
-    anomalies = detect_anomalies(cost_data, threshold=1.5)
-    logger.info("Detected %d anomalies", len(anomalies))
+    anomalies = detect_anomalies(
+        cost_data, threshold=1.5, min_dollars=min_anomaly_dollars
+    )
+    logger.info(
+        "Detected %d anomalies (min_dollars=%s)",
+        len(anomalies),
+        min_anomaly_dollars,
+    )
 
     if anomalies:
         store_findings(findings_table_name, anomalies)

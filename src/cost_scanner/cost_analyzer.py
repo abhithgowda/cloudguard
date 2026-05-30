@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 FINDING_TTL_DAYS = 90
 SEVERITY_CRITICAL_RATIO = 2.0
 SEVERITY_HIGH_RATIO = 1.5
+MIN_ANOMALY_DOLLARS_DEFAULT = 1.0
 
 
 def get_cost_data(ce_client, start_date, end_date):
@@ -54,11 +55,20 @@ def get_cost_data(ce_client, start_date, end_date):
     return results
 
 
-def detect_anomalies(cost_data, threshold=SEVERITY_HIGH_RATIO):
+def detect_anomalies(
+    cost_data,
+    threshold=SEVERITY_HIGH_RATIO,
+    min_dollars=MIN_ANOMALY_DOLLARS_DEFAULT,
+):
     """Compare each service's most recent day vs the average of prior days.
 
     Skip services with zero historical cost (avoids div-by-zero and the
     false-positive of a service that legitimately just turned on).
+
+    ``min_dollars`` is an absolute-dollar floor on the latest day's cost. A
+    90x ratio on $0.0009 is mathematically a spike but operationally noise —
+    surfaced in STEP 20's first live run on a personal account with
+    microscopic S3 spend. Set to 0 to disable.
     """
     anomalies = []
 
@@ -75,6 +85,9 @@ def detect_anomalies(cost_data, threshold=SEVERITY_HIGH_RATIO):
         avg_cost = sum(prior_costs) / len(prior_costs)
 
         if avg_cost <= 0:
+            continue
+
+        if latest_cost < min_dollars:
             continue
 
         ratio = latest_cost / avg_cost

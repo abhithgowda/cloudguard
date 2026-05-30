@@ -39,10 +39,10 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  scan_rule_name    = "${var.project}-${var.environment}-scan-schedule"
-  daily_rule_name   = "${var.project}-${var.environment}-daily-report"
-  weekly_rule_name  = "${var.project}-${var.environment}-weekly-report"
-  role_name         = "${var.project}-${var.environment}-eventbridge-role"
+  scan_rule_name   = "${var.project}-${var.environment}-scan-schedule"
+  daily_rule_name  = "${var.project}-${var.environment}-daily-report"
+  weekly_rule_name = "${var.project}-${var.environment}-weekly-report"
+  role_name        = "${var.project}-${var.environment}-eventbridge-role"
 
   # Inputs passed verbatim to each target. The state machine receives this as
   # its execution input; the report_generator Lambda receives it as the event.
@@ -185,19 +185,19 @@ resource "aws_iam_role_policy" "start_execution" {
 # policy from STEP 7.
 # =============================================================================
 resource "aws_lambda_permission" "allow_daily_report" {
-  statement_id  = "AllowDailyReportFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = var.report_lambda_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily_report.arn
+  statement_id   = "AllowDailyReportFromEventBridge"
+  action         = "lambda:InvokeFunction"
+  function_name  = var.report_lambda_name
+  principal      = "events.amazonaws.com"
+  source_arn     = aws_cloudwatch_event_rule.daily_report.arn
   source_account = data.aws_caller_identity.current.account_id
 }
 
 resource "aws_lambda_permission" "allow_weekly_report" {
-  statement_id  = "AllowWeeklyReportFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = var.report_lambda_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.weekly_report.arn
+  statement_id   = "AllowWeeklyReportFromEventBridge"
+  action         = "lambda:InvokeFunction"
+  function_name  = var.report_lambda_name
+  principal      = "events.amazonaws.com"
+  source_arn     = aws_cloudwatch_event_rule.weekly_report.arn
   source_account = data.aws_caller_identity.current.account_id
 }

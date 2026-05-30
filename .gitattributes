@@ -1,0 +1,55 @@
+# =============================================================================
+# .gitattributes — force LF line endings on files that get zipped into Lambdas
+#
+# Why this file exists:
+#   On Windows, git's default core.autocrlf=true converts LF -> CRLF on
+#   checkout. On Linux (the GitHub Actions runner), the same files check
+#   out with LF. archive_file in the lambda Terraform module zips the bytes
+#   of these files, so the same source produces a different zip SHA256
+#   depending on platform.
+#
+#   That means every CI deploy showed source_code_hash drift on all 4
+#   Lambdas — wasting deploy time, re-uploading unchanged Python, and
+#   creating a misleading "code changed" signal in CloudWatch.
+#
+# Convention:
+#   `text eol=lf` = git stores AND checks out with LF, regardless of OS.
+#   `binary` = git skips line-ending conversion entirely (for files where
+#   byte-identity matters, like zips and images — extra safety for our
+#   archive_file outputs).
+# =============================================================================
+
+# Default: treat everything as text and let git auto-detect.
+* text=auto
+
+# Lambda source — gets zipped into deploy artefacts. Must be LF on every
+# platform so archive_file produces a deterministic SHA.
+*.py            text eol=lf
+*.txt           text eol=lf
+*.sh            text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+
+# Terraform configuration — LF everywhere so `terraform fmt -check` is
+# deterministic across local + CI.
+*.tf            text eol=lf
+*.tfvars        text eol=lf
+*.hcl           text eol=lf
+
+# Markdown / docs — LF for cross-platform diff sanity.
+*.md            text eol=lf
+
+# Windows-only scripts (intentional CRLF — PowerShell handles either, but
+# native Windows tools expect CRLF in some shells).
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Binary files — never touch.
+*.zip           binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.pdf           binary

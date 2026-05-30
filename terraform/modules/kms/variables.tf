@@ -18,3 +18,24 @@ variable "lambda_role_arns" {
   EOT
   type        = list(string)
 }
+
+variable "github_actions_role_arns" {
+  description = <<-EOT
+    ARNs of the GitHub Actions OIDC roles that need to manage CMK-encrypted
+    Lambda environment variables. Pass the github_plan and github_deploy role
+    ARNs from the github_oidc module.
+
+    Why this is needed (STEP 21 hotfix): Terraform's plan refresh phase
+    decrypts each Lambda's env vars to compare with config. The deploy phase
+    re-encrypts them when applying. Both operations need kms:ViaService=lambda
+    on this CMK. Without these grants, CI plan shows all env vars as drift
+    (silent Decrypt AccessDenied returns empty variables) and deploy apply
+    fails with explicit Encrypt AccessDenied.
+
+    Scoped via kms:ViaService = lambda.<region>.amazonaws.com — these roles
+    CANNOT use the CMK to read DynamoDB rows or decrypt S3 objects directly.
+    Empty list disables the grant entirely (for envs that don't use OIDC CI).
+  EOT
+  type        = list(string)
+  default     = []
+}

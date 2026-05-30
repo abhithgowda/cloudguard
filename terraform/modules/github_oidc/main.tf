@@ -149,17 +149,30 @@ resource "aws_iam_role_policy" "plan_state_access" {
 # =============================================================================
 # Role 2 — github_deploy
 #
-# Same trust shape as plan, but the `sub` condition is locked to the `main`
-# branch. A workflow running on a PR or feature branch CANNOT assume this
-# role even if its YAML hardcodes the ARN — STS will reject the AssumeRole
-# call with `AccessDenied`. This is the security boundary that makes OIDC
-# materially safer than static keys: with static keys, anyone with the key
-# can deploy; with OIDC + branch-scoped trust, only main-branch workflows can.
+# Trust policy with THREE conditions (all must match):
+#   1. aud   = "sts.amazonaws.com"
+#   2. sub   = "repo:<org>/<repo>:environment:<deploy_environment>"
+#   3. ref   = "refs/heads/<deploy_branch>"   (skipped if deploy_branch = "")
 #
-# Format reference: GitHub's `sub` claim for a push-to-main workflow run is
-#   repo:<org>/<repo>:ref:refs/heads/<branch>
-# (For PR-triggered runs it would be `repo:<org>/<repo>:pull_request`, which
-# does NOT match this StringEquals condition.)
+# Why environment-based `sub` (not ref-based):
+#   When a GitHub Actions workflow uses `environment: <name>`, GitHub CHANGES
+#   the `sub` claim format from `:ref:refs/heads/<branch>` to
+#   `:environment:<name>`. Our deploy.yml uses `environment: dev` so the only
+#   working sub format is the environment-based one. Earlier versions of this
+#   module used ref-based sub and broke on first deploy with
+#   `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+#
+# Why the additional `ref` claim check:
+#   Defense in depth. GitHub Environment protection rules CAN restrict which
+#   branches can deploy to an environment, but that's UI-side config the user
+#   has to remember to enable. Enforcing the ref claim at AWS guarantees that
+#   even a misconfigured GitHub environment cannot deploy from a non-main
+#   branch. Two locks > one lock.
+#
+# Combined: a workflow can assume this role only if it (a) runs in the dev
+# environment AND (b) was triggered from refs/heads/main AND (c) belongs to
+# this specific repo. A PR cannot escalate to this role even by editing
+# deploy.yml because PR-triggered runs cannot opt into a GitHub Environment.
 # =============================================================================
 data "aws_iam_policy_document" "deploy_assume_role" {
   statement {
@@ -177,7 +190,18 @@ data "aws_iam_policy_document" "deploy_assume_role" {
     condition {
       test     = "StringEquals"
       variable = local.oidc_subject
-      values   = ["${local.repo_qualifier}:ref:refs/heads/${var.deploy_branch}"]
+      values   = ["${local.repo_qualifier}:environment:${var.deploy_environment}"]
+    }
+    # Belt-and-braces branch check. Dynamic block so we can disable it by
+    # setting deploy_branch = "" (e.g. for environments where any branch can
+    # deploy by design — not recommended for prod).
+    dynamic "condition" {
+      for_each = var.deploy_branch != "" ? [1] : []
+      content {
+        test     = "StringEquals"
+        variable = "token.actions.githubusercontent.com:ref"
+        values   = ["refs/heads/${var.deploy_branch}"]
+      }
     }
   }
 }

@@ -209,6 +209,49 @@ data "aws_iam_policy_document" "kms_key_policy" {
   }
 
   # ---------------------------------------------------------------------------
+  # GitHub Actions (plan + deploy roles) → manage CMK-encrypted Lambda env
+  # vars during terraform plan/apply. STEP 21 hotfix — without this Sid, CI
+  # plan reports all env vars as drift (Decrypt AccessDenied returns empty
+  # variables, looks like state drift) and deploy apply fails with explicit
+  # Encrypt AccessDenied when UpdateFunctionConfiguration tries to re-encrypt.
+  #
+  # Same kms:ViaService=lambda boundary as the AllowLambdasViaLambda grant:
+  # these roles can ONLY use the CMK through the Lambda service — not via
+  # DynamoDB, S3, or SNS. So a compromised deploy role cannot decrypt
+  # DynamoDB rows or S3 reports directly.
+  #
+  # Dynamic block: skipped entirely when github_actions_role_arns is empty
+  # (e.g. for an environment that doesn't use OIDC CI).
+  # ---------------------------------------------------------------------------
+  dynamic "statement" {
+    for_each = length(var.github_actions_role_arns) > 0 ? [1] : []
+    content {
+      sid    = "AllowGitHubActionsViaLambda"
+      effect = "Allow"
+
+      principals {
+        type        = "AWS"
+        identifiers = var.github_actions_role_arns
+      }
+
+      actions = [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey",
+      ]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = [local.via_lambda]
+      }
+    }
+  }
+
+  # ---------------------------------------------------------------------------
   # CloudWatch Logs → encrypt log groups (STEP 9).
   #
   # Different shape from the Lambda grants: the principal is the CloudWatch

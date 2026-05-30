@@ -65,6 +65,13 @@ module "kms" {
     module.iam.resource_cleanup_role_arn,
     module.iam.report_generator_role_arn,
   ]
+  # STEP 21 hotfix: github_plan + github_deploy need Lambda-scoped CMK access
+  # to refresh-decrypt and apply-encrypt env vars. Without this, CI plan shows
+  # phantom env-var drift and deploy apply fails AccessDenied on Encrypt.
+  github_actions_role_arns = [
+    module.github_oidc.plan_role_arn,
+    module.github_oidc.deploy_role_arn,
+  ]
 }
 
 # -----------------------------------------------------------------------------
@@ -303,11 +310,12 @@ module "eventbridge" {
 # per environment (the recommended pattern) sidesteps the issue.
 # -----------------------------------------------------------------------------
 module "github_oidc" {
-  source            = "../../modules/github_oidc"
-  project           = var.project
-  environment       = var.environment
-  github_org        = var.github_org
-  github_repo       = var.github_repo
-  state_bucket_name = var.state_bucket_name
-  deploy_branch     = "main"
+  source             = "../../modules/github_oidc"
+  project            = var.project
+  environment        = var.environment
+  github_org         = var.github_org
+  github_repo        = var.github_repo
+  state_bucket_name  = var.state_bucket_name
+  deploy_environment = "dev"  # MUST match deploy.yml's `environment:` value
+  deploy_branch      = "main" # Belt-and-braces: ref claim must also be main
 }

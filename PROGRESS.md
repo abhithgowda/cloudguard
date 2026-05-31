@@ -835,7 +835,7 @@
 
 
 ### ✅ STEP 21.5 — Finding Deduplication via Deterministic finding_id + Upsert
-*Completed: 2026-05-31 · Commit: TBD (this session)*
+*Completed: 2026-05-31 · Commit: `8cafb89` (on `ci-smoke-test` branch)*
 
 - **The trigger (user-spotted, 2026-05-31):** Opening the 2026-05-31 daily SES report showed **50 findings spread across 14 CRITICAL / 16 HIGH / 4 MEDIUM / 16 LOW** — but only ~14 distinct real-world issues existed in the account. The 6-hourly security scanner was writing a brand-new uuid finding for the SAME `sg-0aa84cbcd78d0b0f3 :22 → 0.0.0.0/0` every 6 hours, so a 24h report's `Scan + FilterExpression on timestamp >= cutoff` picked up ~4 copies of every active finding. Same pattern across IAM users, EBS volumes, and S3 buckets.
 - **Path chosen (Option A per session decision):** refactor to idempotent upsert with a deterministic `finding_id`. Modelled on AWS Security Hub's `FirstObservedAt` / `LastObservedAt` fields. Same real-world issue → same PK → same row, with `last_seen` and `occurrence_count` bumped on every re-scan. Alternative considered: report-time dedup only (group by category+resource+check in `_scan_with_filter`) — rejected: faster to ship but hides the data inflation, table still grows 4×, weaker interview story.

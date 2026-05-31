@@ -201,6 +201,137 @@ class TestBatchPutFindings:
         assert second_item["metadata"]["monthly_cost_usd"] == Decimal("85.2")
 
 
+class TestComputeFindingId:
+    def test_deterministic_across_calls(self):
+        a = dynamo_client.compute_finding_id("security", "sg-1", "sg_open_22")
+        b = dynamo_client.compute_finding_id("security", "sg-1", "sg_open_22")
+        assert a == b
+
+    def test_different_inputs_different_ids(self):
+        a = dynamo_client.compute_finding_id("security", "sg-1", "sg_open_22")
+        b = dynamo_client.compute_finding_id("security", "sg-2", "sg_open_22")
+        c = dynamo_client.compute_finding_id("security", "sg-1", "sg_open_3389")
+        d = dynamo_client.compute_finding_id("cost", "sg-1", "sg_open_22")
+        assert len({a, b, c, d}) == 4
+
+    def test_32_char_hex(self):
+        fid = dynamo_client.compute_finding_id("security", "sg-1", "x")
+        assert len(fid) == 32
+        assert all(ch in "0123456789abcdef" for ch in fid)
+
+    def test_delimiter_avoids_concat_ambiguity(self):
+        # Without the delimiter, ("foo", "bar", "baz") would collide with
+        # ("foo", "barbaz", ""). The pipe character breaks that.
+        a = dynamo_client.compute_finding_id("foo", "bar", "baz")
+        b = dynamo_client.compute_finding_id("foo", "barbaz", "")
+        assert a != b
+
+
+class TestUpsertFinding:
+    def _setup(self, query_items=None):
+        table = MagicMock()
+        table.query.return_value = {"Items": query_items or []}
+        resource = MagicMock()
+        resource.Table.return_value = table
+        return resource, table
+
+    def _finding(self, **overrides):
+        base = {
+            "finding_id": "abc123",
+            "timestamp": "2026-05-31T00:00:00+00:00",
+            "category": "security",
+            "severity": "HIGH",
+            "resource_id": "sg-1",
+            "check_name": "sg_open_22",
+            "description": "open SSH",
+            "expires_at": 1700000000,
+        }
+        base.update(overrides)
+        return base
+
+    def test_first_sight_does_put_item(self):
+        resource, table = self._setup(query_items=[])
+        result = dynamo_client.upsert_finding(
+            "t", self._finding(), dynamodb_resource=resource
+        )
+        assert result == "inserted"
+        table.put_item.assert_called_once()
+        table.update_item.assert_not_called()
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["first_seen"] == "2026-05-31T00:00:00+00:00"
+        assert item["last_seen"] == "2026-05-31T00:00:00+00:00"
+        assert item["occurrence_count"] == 1
+
+    def test_re_sight_does_update_item_preserving_sk(self):
+        existing = {
+            "finding_id": "abc123",
+            "timestamp": "2026-05-29T10:00:00+00:00",  # first_seen SK
+            "occurrence_count": 3,
+        }
+        resource, table = self._setup(query_items=[existing])
+        result = dynamo_client.upsert_finding(
+            "t",
+            self._finding(timestamp="2026-05-31T00:00:00+00:00"),
+            dynamodb_resource=resource,
+        )
+        assert result == "updated"
+        table.put_item.assert_not_called()
+        table.update_item.assert_called_once()
+        kwargs = table.update_item.call_args.kwargs
+        # SK on the Update is the EXISTING first_seen, not the new scan time.
+        assert kwargs["Key"]["timestamp"] == "2026-05-29T10:00:00+00:00"
+        # occurrence_count was incremented from 3 to 4.
+        assert kwargs["ExpressionAttributeValues"][":oc"] == 4
+        # last_seen is the new scan time.
+        assert kwargs["ExpressionAttributeValues"][":ls"] == "2026-05-31T00:00:00+00:00"
+
+    def test_re_sight_with_no_prior_count_defaults_to_2(self):
+        # An old uuid-keyed row pre STEP 21.5 has no occurrence_count field
+        # — defaults to 1, increments to 2 on re-sight.
+        existing = {
+            "finding_id": "abc123",
+            "timestamp": "2026-05-29T10:00:00+00:00",
+        }
+        resource, table = self._setup(query_items=[existing])
+        dynamo_client.upsert_finding(
+            "t", self._finding(), dynamodb_resource=resource
+        )
+        assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":oc"] == 2
+
+
+class TestBatchUpsertFindings:
+    def test_empty_returns_zero_counts_no_calls(self):
+        resource = MagicMock()
+        result = dynamo_client.batch_upsert_findings(
+            "t", [], dynamodb_resource=resource
+        )
+        assert result == {"inserted": 0, "updated": 0, "total": 0}
+        resource.Table.assert_not_called()
+
+    def test_mixed_insert_and_update_counts(self):
+        table = MagicMock()
+        # First finding: query returns empty → insert path.
+        # Second finding: query returns existing → update path.
+        table.query.side_effect = [
+            {"Items": []},
+            {"Items": [{"finding_id": "f2", "timestamp": "earlier"}]},
+        ]
+        resource = MagicMock()
+        resource.Table.return_value = table
+
+        result = dynamo_client.batch_upsert_findings(
+            "t",
+            [
+                {"finding_id": "f1", "timestamp": "t1", "severity": "HIGH",
+                 "expires_at": 1, "description": "d1"},
+                {"finding_id": "f2", "timestamp": "t2", "severity": "LOW",
+                 "expires_at": 2, "description": "d2"},
+            ],
+            dynamodb_resource=resource,
+        )
+        assert result == {"inserted": 1, "updated": 1, "total": 2}
+
+
 class TestQueryFindingsByDate:
     def test_scan_with_filter_expression(self):
         table = MagicMock()

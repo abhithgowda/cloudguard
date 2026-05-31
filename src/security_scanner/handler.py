@@ -14,7 +14,6 @@ handler stamps on finding_id, timestamp (ISO-8601 UTC) and expires_at
 import json
 import logging
 import os
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -25,7 +24,7 @@ from iam_checker import check_iam_users
 from s3_checker import check_s3_buckets
 from sg_checker import check_security_groups
 
-from shared.dynamo_client import batch_put_findings
+from shared.dynamo_client import batch_upsert_findings, compute_finding_id
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -48,13 +47,21 @@ def _run_check(name, fn, *args):
 
 
 def _stamp_findings(raw_findings):
-    """Add finding_id / timestamp / expires_at to each finding."""
+    """Add deterministic finding_id / timestamp / expires_at to each finding.
+
+    STEP 21.5: ``finding_id`` is a stable hash of (category, resource_id,
+    check_name), so re-scanning the same SG-port-22-open finding produces
+    the same ID — the upsert path then updates last_seen instead of
+    inserting a duplicate.
+    """
     now = datetime.now(timezone.utc)
     timestamp_iso = now.isoformat()
     expires_at = int((now + timedelta(days=FINDING_TTL_DAYS)).timestamp())
 
     for f in raw_findings:
-        f["finding_id"] = str(uuid.uuid4())
+        f["finding_id"] = compute_finding_id(
+            f["category"], f["resource_id"], f["check_name"]
+        )
         f["timestamp"] = timestamp_iso
         f["expires_at"] = expires_at
         # DynamoDB rejects empty maps in some SDK paths — drop empty metadata.
@@ -81,10 +88,12 @@ def lambda_handler(event, context):
     for f in all_findings:
         by_severity[f["severity"]] = by_severity.get(f["severity"], 0) + 1
 
-    written = batch_put_findings(findings_table_name, all_findings)
+    upsert_counts = batch_upsert_findings(findings_table_name, all_findings)
 
     summary = {
-        "total_findings": written,
+        "total_findings": upsert_counts["total"],
+        "new_findings": upsert_counts["inserted"],
+        "updated_findings": upsert_counts["updated"],
         "by_severity": by_severity,
         "by_check": {
             "security_groups": len(sg_findings),

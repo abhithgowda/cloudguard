@@ -73,7 +73,15 @@ def lambda_handler(event: dict[str, Any] | None, context):
         "Building %dh report for %s — cutoff %s", window_hours, environment, cutoff_iso
     )
 
-    findings = _scan_with_filter(findings_table, Attr("timestamp").gte(cutoff_iso))
+    # STEP 21.5: findings filter on `last_seen` not `timestamp` — finding rows
+    # are now idempotent (deterministic finding_id, see shared.dynamo_client),
+    # so `timestamp` is the immutable first_seen value (SK) and `last_seen`
+    # is bumped on every re-scan. Old rows from before STEP 21.5 won't have
+    # `last_seen` — the OR clause includes those too until they age out (90d).
+    findings = _scan_with_filter(
+        findings_table,
+        Attr("last_seen").gte(cutoff_iso) | Attr("timestamp").gte(cutoff_iso),
+    )
     remediations = _scan_with_filter(
         remediation_table, Attr("timestamp").gte(cutoff_iso)
     )

@@ -61,7 +61,11 @@ def _check_access_keys(iam_client, user):
             findings.append(
                 _finding(
                     user,
-                    "iam_access_key_old",
+                    # Discriminator (STEP 21.5) — same user can have multiple
+                    # access keys; without the key_id suffix both findings
+                    # would collide on (resource_id, check_name) and the
+                    # upsert path would silently overwrite one with the other.
+                    f"iam_access_key_old:{key_id}",
                     "MEDIUM",
                     f"User {user} has an active access key {key_id} {age} days old.",
                     "Rotate keys at least every 90 days. Prefer IAM roles + STS "
@@ -84,7 +88,7 @@ def _check_access_keys(iam_client, user):
                 findings.append(
                     _finding(
                         user,
-                        "iam_access_key_unused",
+                        f"iam_access_key_unused:{key_id}",
                         "MEDIUM",
                         f"User {user} access key {key_id} has never been used "
                         f"({age} days since creation).",
@@ -96,7 +100,7 @@ def _check_access_keys(iam_client, user):
             findings.append(
                 _finding(
                     user,
-                    "iam_access_key_unused",
+                    f"iam_access_key_unused:{key_id}",
                     "MEDIUM",
                     f"User {user} access key {key_id} unused for {unused_days} days.",
                     "Disable or delete keys that have not been used in 90 days.",

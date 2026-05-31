@@ -246,6 +246,8 @@ class TestGetCostData:
 
 class TestStoreCostData:
     def test_pivots_to_one_row_per_day_per_service(self):
+        # cost_data table stays append-only (PK=date, SK=service is naturally
+        # idempotent — same date+service overwrites the same row).
         with patch.object(cost_analyzer, "batch_put_findings") as mock_batch:
             mock_batch.return_value = 3
             result = cost_analyzer.store_cost_data(
@@ -278,7 +280,7 @@ class TestStoreFindings:
             }
         ]
 
-        with patch.object(cost_analyzer, "batch_put_findings") as mock_batch:
+        with patch.object(cost_analyzer, "batch_upsert_findings") as mock_batch:
             mock_batch.return_value = 1
             cost_analyzer.store_findings("cloudguard-dev-findings", anomalies)
 
@@ -289,10 +291,27 @@ class TestStoreFindings:
         assert f["category"] == "cost"
         assert f["resource_id"] == "Amazon EC2"
         assert f["check_name"] == "cost_anomaly_30d_baseline"
-        # finding_id is a uuid string.
-        assert isinstance(f["finding_id"], str) and len(f["finding_id"]) == 36
+        # STEP 21.5: finding_id is now a deterministic 32-char hex hash of
+        # (category, resource_id, check_name) — same anomaly → same ID
+        # → upsert path bumps last_seen instead of inserting a duplicate.
+        assert isinstance(f["finding_id"], str) and len(f["finding_id"]) == 32
+        assert all(c in "0123456789abcdef" for c in f["finding_id"])
         # expires_at is a +90d epoch second integer.
         assert isinstance(f["expires_at"], int)
+
+    def test_finding_id_is_deterministic_across_runs(self):
+        anomaly = {
+            "service": "Amazon EC2", "date": "2026-05-30",
+            "expected_cost": 1.0, "actual_cost": 3.0,
+            "ratio": 3.0, "percentage_increase": 200.0,
+        }
+        with patch.object(cost_analyzer, "batch_upsert_findings") as mock_batch:
+            mock_batch.return_value = {"inserted": 1, "updated": 0, "total": 1}
+            cost_analyzer.store_findings("t", [anomaly])
+            fid_1 = mock_batch.call_args.args[1][0]["finding_id"]
+            cost_analyzer.store_findings("t", [anomaly])
+            fid_2 = mock_batch.call_args.args[1][0]["finding_id"]
+        assert fid_1 == fid_2
 
     def test_high_severity_for_ratio_1_5(self):
         anomalies = [{
@@ -300,16 +319,16 @@ class TestStoreFindings:
             "expected_cost": 1.0, "actual_cost": 1.5,
             "ratio": 1.5, "percentage_increase": 50.0,
         }]
-        with patch.object(cost_analyzer, "batch_put_findings") as mock_batch:
-            mock_batch.return_value = 1
+        with patch.object(cost_analyzer, "batch_upsert_findings") as mock_batch:
+            mock_batch.return_value = {"inserted": 1, "updated": 0, "total": 1}
             cost_analyzer.store_findings("t", anomalies)
 
         items = mock_batch.call_args.args[1]
         assert items[0]["severity"] == "HIGH"
 
     def test_empty_anomalies_still_called_with_empty_list(self):
-        with patch.object(cost_analyzer, "batch_put_findings") as mock_batch:
-            mock_batch.return_value = 0
+        with patch.object(cost_analyzer, "batch_upsert_findings") as mock_batch:
+            mock_batch.return_value = {"inserted": 0, "updated": 0, "total": 0}
             cost_analyzer.store_findings("t", [])
-        # batch_put_findings handles the empty-list no-op internally.
+        # batch_upsert_findings handles the empty-list no-op internally.
         assert mock_batch.call_args.args[1] == []

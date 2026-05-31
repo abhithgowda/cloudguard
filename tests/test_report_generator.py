@@ -143,6 +143,36 @@ class TestBuildReport:
         # Raw script tag NOT present.
         assert "<script>alert" not in html
 
+    def test_occurrence_count_rendered_when_greater_than_one(self):
+        # STEP 21.5: repeating findings get bumped occurrence_count via the
+        # upsert path; the report surfaces "Seen N times since YYYY-MM-DD".
+        findings = [{
+            "category": "security", "severity": "HIGH",
+            "resource_id": "sg-1",
+            "description": "open SSH",
+            "occurrence_count": 12,
+            "first_seen": "2026-05-29T10:00:00+00:00",
+        }]
+        html = html_builder.build_report(
+            findings=findings, cost_data=[], remediations=[],
+            window_hours=168, environment="dev",
+        )
+        assert "Seen 12 times since 2026-05-29" in html
+
+    def test_occurrence_count_one_not_rendered(self):
+        # First-sight finding shouldn't have noisy "Seen 1 times" caption.
+        findings = [{
+            "category": "security", "severity": "HIGH",
+            "resource_id": "sg-1",
+            "description": "open SSH",
+            "occurrence_count": 1,
+        }]
+        html = html_builder.build_report(
+            findings=findings, cost_data=[], remediations=[],
+            window_hours=24, environment="dev",
+        )
+        assert "Seen 1 times" not in html
+
     def test_estimated_savings_uses_cleanup_metadata(self):
         html = html_builder.build_report(
             findings=_sample_findings(),

@@ -36,7 +36,11 @@ from zombie_finder import (
     find_zombie_ebs_volumes,
 )
 
-from shared.dynamo_client import batch_put_findings
+from shared.dynamo_client import (
+    batch_put_findings,
+    batch_upsert_findings,
+    compute_finding_id,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -48,13 +52,22 @@ ec2 = boto3.client("ec2")
 
 # -- Stamping ----------------------------------------------------------------
 def _stamp_findings(raw_findings):
-    """Add finding_id / timestamp / expires_at to each finding."""
+    """Add deterministic finding_id / timestamp / expires_at to each finding.
+
+    STEP 21.5: ``finding_id`` is a stable hash of (category, resource_id,
+    check_name). The same zombie volume re-detected next scan keeps the
+    same ID, so the upsert path bumps last_seen instead of inserting a
+    duplicate row. Remediation_log entries below keep uuid — each remediation
+    attempt IS a discrete event with its own audit row.
+    """
     now = datetime.now(timezone.utc)
     timestamp_iso = now.isoformat()
     expires_at = int((now + timedelta(days=FINDING_TTL_DAYS)).timestamp())
 
     for f in raw_findings:
-        f["finding_id"] = str(uuid.uuid4())
+        f["finding_id"] = compute_finding_id(
+            f["category"], f["resource_id"], f["check_name"]
+        )
         f["timestamp"] = timestamp_iso
         f["expires_at"] = expires_at
         if f.get("metadata") in (None, {}):
@@ -168,10 +181,11 @@ def lambda_handler(event, context):
     all_findings = volumes + eips + snapshots
 
     _stamp_findings(all_findings)
-    # batch_put_findings handles the float→Decimal coercion recursively, which
-    # fixes the latent bug where metadata.monthly_cost_usd (a float from
-    # zombie_finder) would have made boto3 raise TypeError on the first apply.
-    findings_written = batch_put_findings(findings_table_name, all_findings)
+    # STEP 21.5: idempotent upsert (deterministic finding_id). Same zombie
+    # volume re-detected next scan updates last_seen instead of inserting
+    # a duplicate. Float→Decimal coercion is still recursive via the helper.
+    upsert_counts = batch_upsert_findings(findings_table_name, all_findings)
+    findings_written = upsert_counts["total"]
 
     estimated_savings = sum(
         f.get("metadata", {}).get("monthly_cost_usd", 0) for f in all_findings
@@ -186,6 +200,8 @@ def lambda_handler(event, context):
         "eips_found": len(eips),
         "snapshots_found": len(snapshots),
         "findings_written": findings_written,
+        "new_findings": upsert_counts["inserted"],
+        "updated_findings": upsert_counts["updated"],
         "estimated_monthly_savings_usd": round(float(estimated_savings), 2),
         "auto_remediate_armed": armed,
         "remediations": remediation_counts,

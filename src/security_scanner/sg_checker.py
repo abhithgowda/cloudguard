@@ -84,10 +84,15 @@ def _evaluate_rule(sg, rule):
 
     port_label = "all" if all_ports else f"{rule.get('FromPort')}-{rule.get('ToPort')}"
 
+    # Discriminator on check_name (STEP 21.5) — one SG with TWO open rules
+    # (e.g. port 22 + port 8080) must produce TWO distinct finding_ids.
+    # Without the proto+port suffix, compute_finding_id collapses both into
+    # one row and the second rule's severity / description silently overwrite
+    # the first via the upsert path.
     return {
         "resource_id": sg["GroupId"],
         "resource_type": "aws_security_group",
-        "check_name": "sg_open_to_world",
+        "check_name": f"sg_open_to_world:{proto or '-1'}:{port_label}",
         "severity": severity,
         "category": "security",
         "description": (

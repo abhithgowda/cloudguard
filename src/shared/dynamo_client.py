@@ -6,14 +6,26 @@ preserve the textual precision the caller intended; ``Decimal(0.1)`` would
 produce ``Decimal('0.10000000000000000555...')``. This matches the
 convention already used in ``src/cost_scanner/cost_analyzer.py``.
 
-Batch writes go through ``table.batch_writer()`` which transparently
-splits into 25-item ``BatchWriteItem`` requests (the AWS limit) and
-retries ``UnprocessedItems`` with backoff.
+Two write paths:
+
+* ``batch_put_findings`` — append-only, uses ``table.batch_writer()`` for
+  25-item ``BatchWriteItem`` requests. Use for tables where each write is a
+  discrete event (e.g. ``cloudguard-<env>-remediation-log``, ``cost-data``).
+
+* ``upsert_finding`` / ``batch_upsert_findings`` — idempotent. The finding
+  table's PK is ``finding_id``; using a deterministic ``compute_finding_id``
+  hash means re-scanning the same real-world issue updates the same row
+  (``last_seen``, ``occurrence_count``) instead of inserting duplicates.
+  Modelled on AWS Security Hub's ``FirstObservedAt`` / ``LastObservedAt``.
+  Trade-off: one ``Query`` + one ``Put``/``Update`` per finding instead of
+  batched ``BatchWriteItem``. At dev volume (~50 findings / scan) this is a
+  rounding error.
 
 Each Lambda's deployment zip bundles its own copy of this module (see
 ``scripts/package_lambdas.sh`` in STEP 19).
 """
 
+import hashlib
 import logging
 from decimal import Decimal
 
@@ -46,6 +58,104 @@ def _coerce_decimals(item):
     if isinstance(item, list):
         return [_coerce_decimals(v) for v in item]
     return item
+
+
+def compute_finding_id(category, resource_id, check_name):
+    """Deterministic finding ID — same real-world issue maps to the same PK.
+
+    SHA-256 of ``<category>|<resource_id>|<check_name>`` truncated to 32 hex
+    chars (128 bits — collision-resistant for the small finding population
+    CloudGuard generates, and short enough to read in DynamoDB console).
+
+    The delimiter avoids ``foo|bar|baz`` vs ``foobar|baz`` ambiguity from
+    naive concatenation. All three inputs are converted to ``str`` so a
+    caller passing an int (e.g. a port number) doesn't break the hash.
+    """
+    key = f"{category}|{resource_id}|{check_name}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+def upsert_finding(table_name, finding, dynamodb_resource=None):
+    """Idempotent finding write — same ``finding_id`` updates the same row.
+
+    Caller stamps ``finding_id`` (use ``compute_finding_id``), ``timestamp``
+    (the current scan time, used as SK on first-sight only), and
+    ``expires_at``. On re-sight the existing SK is preserved (it is the
+    immutable ``first_seen`` value) and ``last_seen`` / ``occurrence_count``
+    / ``expires_at`` are bumped.
+
+    Implementation: ``Query`` by PK → if existing item found, ``UpdateItem``
+    on the existing (PK, SK); otherwise ``PutItem`` with current timestamp
+    as SK and ``first_seen = last_seen = now``, ``occurrence_count = 1``.
+
+    Returns ``"inserted"`` or ``"updated"``.
+    """
+    resource = dynamodb_resource or _get_resource()
+    table = resource.Table(table_name)
+
+    finding_id = finding["finding_id"]
+    now_iso = finding["timestamp"]
+    expires_at = finding["expires_at"]
+
+    existing = table.query(
+        KeyConditionExpression=Key("finding_id").eq(finding_id),
+        Limit=1,
+    ).get("Items", [])
+
+    if existing:
+        existing_sk = existing[0]["timestamp"]
+        prior_count = int(existing[0].get("occurrence_count", 1))
+        table.update_item(
+            Key={"finding_id": finding_id, "timestamp": existing_sk},
+            UpdateExpression=(
+                "SET last_seen = :ls, "
+                "occurrence_count = :oc, "
+                "expires_at = :ea, "
+                "severity = :sv, "
+                "description = :desc"
+            ),
+            ExpressionAttributeValues=_coerce_decimals({
+                ":ls": now_iso,
+                ":oc": prior_count + 1,
+                ":ea": expires_at,
+                ":sv": finding["severity"],
+                ":desc": finding.get("description", ""),
+            }),
+        )
+        return "updated"
+
+    item = dict(finding)
+    item.setdefault("first_seen", now_iso)
+    item.setdefault("last_seen", now_iso)
+    item.setdefault("occurrence_count", 1)
+    table.put_item(Item=_coerce_decimals(item))
+    return "inserted"
+
+
+def batch_upsert_findings(table_name, findings, dynamodb_resource=None):
+    """Upsert a batch of findings sequentially.
+
+    Returns ``{"inserted": int, "updated": int, "total": int}``. Sequential
+    rather than ``BatchWriteItem`` because the AWS batch API does not support
+    conditional / read-then-write semantics — the per-item Query is required.
+    No-op for an empty input list.
+    """
+    counts = {"inserted": 0, "updated": 0, "total": 0}
+    if not findings:
+        return counts
+
+    for finding in findings:
+        action = upsert_finding(table_name, finding, dynamodb_resource)
+        counts[action] += 1
+        counts["total"] += 1
+
+    logger.info(
+        "batch_upsert_findings: %d inserted, %d updated on %s",
+        counts["inserted"],
+        counts["updated"],
+        table_name,
+    )
+    return counts
 
 
 def put_finding(table_name, finding, dynamodb_resource=None):

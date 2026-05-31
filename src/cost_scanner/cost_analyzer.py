@@ -5,10 +5,13 @@ and call these directly without invoking the Lambda runtime.
 """
 
 import logging
-import uuid
 from datetime import date, datetime, timedelta, timezone
 
-from shared.dynamo_client import batch_put_findings
+from shared.dynamo_client import (
+    batch_put_findings,
+    batch_upsert_findings,
+    compute_finding_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +137,12 @@ def store_cost_data(table_name, cost_data):
 
 
 def store_findings(table_name, anomalies):
-    """Batch-write anomalies to cloudguard-<env>-findings with 90-day TTL.
+    """Upsert anomalies into cloudguard-<env>-findings (idempotent on re-scan).
 
-    Stamps finding_id / timestamp / expires_at here (same shared timestamp
-    for the whole batch is intentional — a single scanner run is one logical
-    write event). Float coercion is delegated to ``batch_put_findings``.
+    STEP 21.5: finding_id is a deterministic hash of category/resource/check,
+    so re-detecting the same service-day anomaly bumps last_seen +
+    occurrence_count on the existing row instead of inserting a duplicate.
+    Float coercion is delegated to ``batch_upsert_findings``.
     """
     now = datetime.now(timezone.utc)
     expires_at = int((now + timedelta(days=FINDING_TTL_DAYS)).timestamp())
@@ -153,7 +157,9 @@ def store_findings(table_name, anomalies):
             f"above the prior-period average of ${anomaly['expected_cost']}."
         )
         items.append({
-            "finding_id": str(uuid.uuid4()),
+            "finding_id": compute_finding_id(
+                "cost", anomaly["service"], "cost_anomaly_30d_baseline"
+            ),
             "timestamp": timestamp_iso,
             "category": "cost",
             "severity": severity,
@@ -167,4 +173,4 @@ def store_findings(table_name, anomalies):
             "expires_at": expires_at,
         })
 
-    return batch_put_findings(table_name, items)
+    return batch_upsert_findings(table_name, items)

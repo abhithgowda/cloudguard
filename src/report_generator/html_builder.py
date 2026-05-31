@@ -186,6 +186,13 @@ def _security_section(findings: list[dict]) -> str:
             continue
         rows = []
         for f in items:
+            occ = int(f.get("occurrence_count", 1))
+            occ_note = (
+                f'<br><span style="{_MUTED}">Seen {occ} times since '
+                f'{html.escape(str(f.get("first_seen", f.get("timestamp", ""))[:10]))}</span>'
+                if occ > 1
+                else ""
+            )
             rows.append(
                 f'<tr>'
                 f'<td style="{_TD};width:96px;">{_badge(sev)}</td>'
@@ -197,6 +204,7 @@ def _security_section(findings: list[dict]) -> str:
                     if f.get("recommendation")
                     else ""
                 )
+                + occ_note
                 + "</td></tr>"
             )
         blocks.append(

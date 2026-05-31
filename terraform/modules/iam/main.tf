@@ -102,10 +102,14 @@ resource "aws_iam_role_policy" "cost_scanner" {
       {
         # DynamoDB writes scoped to ONLY the two tables this function uses.
         # /index/* covers GSI queries.
+        # UpdateItem + Query added in STEP 21.5 for the idempotent upsert
+        # path in shared.dynamo_client (deterministic finding_id).
+        # BatchWriteItem kept because cost_data still uses batch_put_findings.
         Sid    = "DynamoDBWriteFindingsAndCostData"
         Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:Query"
         ]
@@ -198,9 +202,17 @@ resource "aws_iam_role_policy" "security_scanner" {
         Resource = "*"
       },
       {
+        # UpdateItem + Query added in STEP 21.5 for the idempotent upsert
+        # path in shared.dynamo_client (deterministic finding_id).
+        # BatchWriteItem retained for any future bulk-write paths.
         Sid    = "DynamoDBWriteFindings"
         Effect = "Allow"
-        Action = ["dynamodb:PutItem", "dynamodb:BatchWriteItem"]
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:Query"
+        ]
         Resource = [
           local.findings_table_arn,
           "${local.findings_table_arn}/index/*"
@@ -263,11 +275,20 @@ resource "aws_iam_role_policy" "resource_cleanup" {
         Resource = "*"
       },
       {
+        # UpdateItem + Query (on findings table only) added in STEP 21.5 for
+        # the idempotent upsert path. Remediation log is still append-only
+        # (each remediation event is a discrete row with its own uuid).
         Sid    = "DynamoDBWriteFindingsAndRemediation"
         Effect = "Allow"
-        Action = ["dynamodb:PutItem", "dynamodb:BatchWriteItem"]
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:BatchWriteItem",
+          "dynamodb:Query"
+        ]
         Resource = [
           local.findings_table_arn,
+          "${local.findings_table_arn}/index/*",
           local.remediation_log_arn,
           "${local.remediation_log_arn}/index/*"
         ]

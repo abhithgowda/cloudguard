@@ -72,6 +72,10 @@ module "kms" {
     module.github_oidc.plan_role_arn,
     module.github_oidc.deploy_role_arn,
   ]
+
+  # STEP 22: grant the CloudWatch service principal Decrypt/GenerateDataKey on
+  # this CMK (scoped to SNS) so alarms can publish to the encrypted alerts topic.
+  cloudwatch_alarms_enabled = true
 }
 
 # -----------------------------------------------------------------------------
@@ -128,6 +132,9 @@ module "sns" {
     module.iam.resource_cleanup_role_arn,
     module.iam.report_generator_role_arn,
   ]
+
+  # STEP 22: allow CloudWatch alarms (cloudguard-dev-*) to Publish to this topic.
+  cloudwatch_alarms_enabled = true
 }
 
 # -----------------------------------------------------------------------------
@@ -318,4 +325,42 @@ module "github_oidc" {
   state_bucket_name  = var.state_bucket_name
   deploy_environment = "dev"  # MUST match deploy.yml's `environment:` value
   deploy_branch      = "main" # Belt-and-braces: ref claim must also be main
+}
+
+# -----------------------------------------------------------------------------
+# CloudWatch module (STEP 22)
+#
+# One dashboard + per-Lambda error-rate/duration alarms + an SFN failure alarm,
+# all fanning out to the existing cloudguard-alerts SNS topic. The kms and sns
+# modules above set cloudwatch_alarms_enabled = true so the encrypted topic can
+# actually receive these alarms' publishes (KMS GenerateDataKey + topic-policy
+# Publish for the cloudwatch.amazonaws.com principal).
+#
+# lambda_functions carries each function's timeout because the duration alarm
+# threshold is 80% of timeout — and report_generator (600s) differs from the
+# three scanners (300s, the lambda module default).
+# -----------------------------------------------------------------------------
+module "cloudwatch" {
+  source      = "../../modules/cloudwatch"
+  project     = var.project
+  environment = var.environment
+  aws_region  = var.aws_region
+
+  lambda_functions = {
+    (module.cost_scanner.function_name)     = { timeout = 300 }
+    (module.security_scanner.function_name) = { timeout = 300 }
+    (module.resource_cleanup.function_name) = { timeout = 300 }
+    (module.report_generator.function_name) = { timeout = 600 }
+  }
+
+  state_machine_arn  = module.step_functions.state_machine_arn
+  state_machine_name = module.step_functions.state_machine_name
+
+  dynamodb_table_names = [
+    module.dynamodb.findings_table_name,
+    module.dynamodb.cost_data_table_name,
+    module.dynamodb.remediation_log_table_name,
+  ]
+
+  alarm_topic_arn = module.sns.topic_arn
 }

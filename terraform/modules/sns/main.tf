@@ -23,6 +23,12 @@ data "aws_region" "current" {}
 
 locals {
   topic_name = "${var.project}-${var.environment}-alerts"
+
+  # CloudWatch alarms created by the cloudwatch module (STEP 22) are named
+  # <project>-<environment>-*. Scoping the CloudWatch publish grant by this
+  # aws:SourceArn pattern means only OUR alarms can publish via the service
+  # principal — not any alarm anyone creates in the account.
+  alarm_arn_pattern = "arn:aws:cloudwatch:${data.aws_region.current.id}:${data.aws_caller_identity.current.account_id}:alarm:${var.project}-${var.environment}-*"
 }
 
 # =============================================================================
@@ -152,6 +158,41 @@ data "aws_iam_policy_document" "topic_policy" {
 
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.alerts.arn]
+  }
+
+  # ---------------------------------------------------------------------------
+  # Allow CloudWatch alarms to Publish (STEP 22).
+  #
+  # The CloudWatch service publishes alarm notifications as the
+  # cloudwatch.amazonaws.com service principal — NOT as one of the Lambda roles
+  # and NOT as the account root. The locked-down policy above grants neither,
+  # so without this statement an alarm transition is silently dropped.
+  #
+  # Scoped two ways: the principal is only the CloudWatch service, and
+  # aws:SourceArn pins it to alarms named <project>-<environment>-* in this
+  # account — so an unrelated alarm elsewhere in the account cannot use this
+  # topic as its action target. Gated by var.cloudwatch_alarms_enabled.
+  # ---------------------------------------------------------------------------
+  dynamic "statement" {
+    for_each = var.cloudwatch_alarms_enabled ? [1] : []
+    content {
+      sid    = "AllowCloudWatchAlarmsPublish"
+      effect = "Allow"
+
+      principals {
+        type        = "Service"
+        identifiers = ["cloudwatch.amazonaws.com"]
+      }
+
+      actions   = ["sns:Publish"]
+      resources = [aws_sns_topic.alerts.arn]
+
+      condition {
+        test     = "ArnLike"
+        variable = "aws:SourceArn"
+        values   = [local.alarm_arn_pattern]
+      }
+    }
   }
 }
 

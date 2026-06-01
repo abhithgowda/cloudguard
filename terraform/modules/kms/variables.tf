@@ -39,3 +39,21 @@ variable "github_actions_role_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "cloudwatch_alarms_enabled" {
+  description = <<-EOT
+    When true, add a key-policy statement granting the CloudWatch service
+    principal kms:Decrypt + kms:GenerateDataKey* on this CMK, scoped via
+    kms:ViaService = sns.<region>.amazonaws.com.
+
+    Required because the alerts SNS topic is encrypted with this CMK. When a
+    CloudWatch alarm publishes to that topic, SNS calls GenerateDataKey with
+    cloudwatch.amazonaws.com as the principal — and the key policy must grant
+    it, or the publish fails and the notification is silently dropped (the
+    classic "my alarm never emailed me" gotcha). The ViaService condition
+    confines CloudWatch to using this key ONLY through SNS — it cannot decrypt
+    DynamoDB rows or S3 objects. Default false; dev sets it true in STEP 22.
+  EOT
+  type        = bool
+  default     = false
+}

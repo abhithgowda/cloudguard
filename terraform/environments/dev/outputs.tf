@@ -181,3 +181,20 @@ output "github_deploy_role_arn" {
   description = "Role for deploy: terraform apply + AdministratorAccess. Assumable ONLY from the main branch via the trust policy. Set as AWS_DEPLOY_ROLE_ARN in GitHub repo variables."
   value       = module.github_oidc.deploy_role_arn
 }
+
+# -----------------------------------------------------------------------------
+# CloudWatch outputs (STEP 22)
+# -----------------------------------------------------------------------------
+output "cloudwatch_dashboard_name" {
+  description = "Name of the CloudWatch dashboard. Console → CloudWatch → Dashboards → cloudguard-dev."
+  value       = module.cloudwatch.dashboard_name
+}
+
+output "cloudwatch_alarm_names" {
+  description = "All CloudWatch alarm names created in STEP 22: per-Lambda error-rate + duration, plus the SFN failure alarm."
+  value = {
+    error_rate  = module.cloudwatch.error_rate_alarm_names
+    duration    = module.cloudwatch.duration_alarm_names
+    sfn_failure = module.cloudwatch.sfn_failure_alarm_name
+  }
+}

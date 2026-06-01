@@ -91,12 +91,16 @@ resource "aws_cloudwatch_dashboard" "main" {
           period  = 300
           # Avg shows the typical run; p99 surfaces the tail a mean hides —
           # exactly the runs creeping toward the timeout the duration alarm guards.
-          metrics = flatten([
-            for fn in local.fn_names : [
-              ["AWS/Lambda", "Duration", "FunctionName", fn, { stat = "Average", label = "${fn} avg" }],
-              ["AWS/Lambda", "Duration", "FunctionName", fn, { stat = "p99", label = "${fn} p99" }],
-            ]
-          ])
+          #
+          # concat (not flatten): each metric entry is itself a list, and
+          # flatten() recurses into EVERY nested list — it would dissolve the
+          # metric entries into one flat array and PutDashboard rejects that.
+          # concat joins the two single-level comprehensions at the top level
+          # only, preserving each ["AWS/Lambda","Duration",...] entry intact.
+          metrics = concat(
+            [for fn in local.fn_names : ["AWS/Lambda", "Duration", "FunctionName", fn, { stat = "Average", label = "${fn} avg" }]],
+            [for fn in local.fn_names : ["AWS/Lambda", "Duration", "FunctionName", fn, { stat = "p99", label = "${fn} p99" }]],
+          )
         }
       },
 
@@ -137,12 +141,12 @@ resource "aws_cloudwatch_dashboard" "main" {
           stat    = "Sum"
           # PAY_PER_REQUEST tables still emit consumed-capacity metrics — this
           # widget is the evidence there's no provisioned ceiling being hit.
-          metrics = flatten([
-            for t in var.dynamodb_table_names : [
-              ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", t],
-              ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", t],
-            ]
-          ])
+          # concat (not flatten) for the same reason as the Duration widget:
+          # flatten() would dissolve each metric entry into the parent array.
+          metrics = concat(
+            [for t in var.dynamodb_table_names : ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", t]],
+            [for t in var.dynamodb_table_names : ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", t]],
+          )
         }
       },
     ]

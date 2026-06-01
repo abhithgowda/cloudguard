@@ -892,7 +892,7 @@
 
 
 ### ✅ STEP 22 — Add CloudWatch Dashboard + 3 Alarm Classes
-*Completed (IaC authored + validated + plan-reviewed): 2026-06-01 · Commit: `<pending>` · Apply: via CI deploy on merge to main (deploy.yml)*
+*Completed (IaC authored + validated + plan-reviewed): 2026-06-01 · Commit: `b8f432c` (on `ci-smoke-test`) · Apply: via CI deploy on merge to main (deploy.yml)*
 
 - **Scope:** New reusable `terraform/modules/cloudwatch` module — one dashboard (5 widgets) + per-Lambda error-rate alarms + per-Lambda duration alarms + a Step Functions failure alarm, all fanning out to the existing `cloudguard-alerts` SNS topic. Plus the two cross-cutting policy edits required to make alarm delivery to a CMK-encrypted, locked-down topic actually work.
 - **Decisions settled with the user up front (architect-level forks):**

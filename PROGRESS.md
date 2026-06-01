@@ -892,7 +892,9 @@
 
 
 ### ✅ STEP 22 — Add CloudWatch Dashboard + 3 Alarm Classes
-*Completed (IaC authored + validated + plan-reviewed): 2026-06-01 · Commit: `b8f432c` (on `ci-smoke-test`) · Apply: via CI deploy on merge to main (deploy.yml)*
+*Completed + LIVE: 2026-06-01 · Commits: `b8f432c` (module) + `c62e299` (flatten→concat dashboard hotfix), on `ci-smoke-test` · Apply: 9 alarms + SNS/KMS grants via the first CI deploy (partial — failed on the dashboard); dashboard created via a targeted local apply after the concat hotfix*
+
+> **Live state (verified 2026-06-01 via `aws cloudwatch describe-alarms` / `get-dashboard`):** dashboard `cloudguard-dev` exists; all 9 alarms present and in `OK` (they have real metric data from the 6-hourly scans, sitting below threshold). The first CI deploy (merge to main) partial-applied everything EXCEPT the dashboard, which failed `PutDashboard` on the `flatten()` bug (see Problems Hit 2026-06-01 "STEP 22 deploy"). After the `concat` hotfix, the dashboard was created with `terraform apply -target=module.cloudwatch.aws_cloudwatch_dashboard.main`. **Caveat:** `-target` pulled the 4 Lambdas in as dependencies (their `function_name` feeds the dashboard) and re-pushed Windows-built zips — identical pure-Python STEP 21.5 code, runs fine on Lambda; the next CI deploy flips those 4 `source_code_hash` values back to Linux-built. Pending: merge `c62e299` to main so the pipeline's state matches (will show the dashboard as already-created, 0 dashboard changes).
 
 - **Scope:** New reusable `terraform/modules/cloudwatch` module — one dashboard (5 widgets) + per-Lambda error-rate alarms + per-Lambda duration alarms + a Step Functions failure alarm, all fanning out to the existing `cloudguard-alerts` SNS topic. Plus the two cross-cutting policy edits required to make alarm delivery to a CMK-encrypted, locked-down topic actually work.
 - **Decisions settled with the user up front (architect-level forks):**

@@ -252,6 +252,46 @@ data "aws_iam_policy_document" "kms_key_policy" {
   }
 
   # ---------------------------------------------------------------------------
+  # CloudWatch alarms → publish to the CMK-encrypted SNS topic (STEP 22).
+  #
+  # The alerts topic is SSE-encrypted with this CMK. When a CloudWatch alarm
+  # fires its SNS action, SNS calls GenerateDataKey to encrypt the notification,
+  # and the principal KMS evaluates is cloudwatch.amazonaws.com (the publisher).
+  # Without this grant the publish fails with KMS AccessDenied and the
+  # notification is silently dropped — the alerting system would look healthy
+  # while delivering nothing.
+  #
+  # Same kms:ViaService = sns boundary as AllowLambdasViaSNS: CloudWatch can use
+  # this key ONLY through SNS, never to decrypt DynamoDB rows or S3 objects.
+  # Gated by var.cloudwatch_alarms_enabled (empty/false for envs without alarms).
+  # ---------------------------------------------------------------------------
+  dynamic "statement" {
+    for_each = var.cloudwatch_alarms_enabled ? [1] : []
+    content {
+      sid    = "AllowCloudWatchAlarmsViaSNS"
+      effect = "Allow"
+
+      principals {
+        type        = "Service"
+        identifiers = ["cloudwatch.amazonaws.com"]
+      }
+
+      actions = [
+        "kms:Decrypt",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey",
+      ]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = [local.via_sns]
+      }
+    }
+  }
+
+  # ---------------------------------------------------------------------------
   # CloudWatch Logs → encrypt log groups (STEP 9).
   #
   # Different shape from the Lambda grants: the principal is the CloudWatch

@@ -75,6 +75,8 @@ resource "aws_iam_role" "cost_scanner" {
   name               = "${local.name_prefix}-cost-scanner-role"
   description        = "Role for CloudGuard cost scanner Lambda - reads Cost Explorer, writes findings."
   assume_role_policy = local.lambda_assume_role_policy
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-cost-scanner-role" })
 }
 
 resource "aws_iam_role_policy" "cost_scanner" {
@@ -144,6 +146,8 @@ resource "aws_iam_role" "security_scanner" {
   name               = "${local.name_prefix}-security-scanner-role"
   description        = "Role for CloudGuard security scanner Lambda - reads SG, S3, IAM, Config."
   assume_role_policy = local.lambda_assume_role_policy
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-security-scanner-role" })
 }
 
 resource "aws_iam_role_policy" "security_scanner" {
@@ -253,6 +257,8 @@ resource "aws_iam_role" "resource_cleanup" {
   name               = "${local.name_prefix}-resource-cleanup-role"
   description        = "Role for CloudGuard cleanup Lambda - describes and deletes zombie EC2 resources."
   assume_role_policy = local.lambda_assume_role_policy
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-resource-cleanup-role" })
 }
 
 resource "aws_iam_role_policy" "resource_cleanup" {
@@ -336,6 +342,8 @@ resource "aws_iam_role" "report_generator" {
   name               = "${local.name_prefix}-report-generator-role"
   description        = "Role for CloudGuard report generator Lambda - queries findings, writes reports."
   assume_role_policy = local.lambda_assume_role_policy
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-report-generator-role" })
 }
 
 resource "aws_iam_role_policy" "report_generator" {

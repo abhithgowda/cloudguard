@@ -186,9 +186,9 @@ resource "aws_cloudwatch_log_group" "sfn" {
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 
-  tags = {
+  tags = merge(var.tags, {
     StateMachine = local.state_machine_name
-  }
+  })
 }
 
 # =============================================================================
@@ -202,6 +202,8 @@ resource "aws_cloudwatch_log_group" "sfn" {
 resource "aws_iam_role" "sfn" {
   name        = local.role_name
   description = "Role for CloudGuard ${var.environment} Step Functions state machine - invokes 4 Lambdas, delivers logs + X-Ray."
+
+  tags = merge(var.tags, { Name = local.role_name })
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -341,9 +343,9 @@ resource "aws_sfn_state_machine" "this" {
     enabled = var.tracing_enabled
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Name = local.state_machine_name
-  }
+  })
 
   depends_on = [
     aws_iam_role_policy.lambda_invoke,

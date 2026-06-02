@@ -12,6 +12,12 @@ variable "environment" {
   type        = string
 }
 
+variable "tags" {
+  description = "Extra tags merged onto every taggable resource in this module, on top of the provider default_tags (STEP 24). The caller passes a Component tag for finer-grained cost allocation. Default empty keeps the module usable standalone."
+  type        = map(string)
+  default     = {}
+}
+
 variable "reports_bucket_name" {
   description = "Globally-unique name for the reports bucket. Constructed by the caller (typically '$${project}-$${environment}-reports-$${suffix}') so the IAM module and the S3 module agree on the same string from one source of truth."
   type        = string

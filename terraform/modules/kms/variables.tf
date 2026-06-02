@@ -9,6 +9,12 @@ variable "environment" {
   type        = string
 }
 
+variable "tags" {
+  description = "Extra tags merged onto every taggable resource in this module, on top of the provider default_tags (STEP 24). The caller passes a Component tag for finer-grained cost allocation. Default empty keeps the module usable standalone."
+  type        = map(string)
+  default     = {}
+}
+
 variable "lambda_role_arns" {
   description = <<-EOT
     ARNs of the Lambda execution roles that need to use this CMK.

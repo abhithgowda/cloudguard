@@ -20,6 +20,28 @@ variable "project" {
   default     = "cloudguard"
 }
 
+# -----------------------------------------------------------------------------
+# Tagging strategy (STEP 24)
+#
+# Owner + CostCenter complete the 5-tag universal set (Project, Environment,
+# ManagedBy are set inline in the provider default_tags block). They live as
+# variables so prod can override the owner/cost-center without touching the
+# provider block, and so the values stay out of any hardcoded module internals.
+# Values are plain hyphenated ASCII — IAM/S3/SNS tag validators reject em-dashes
+# and (SNS) commas, a lesson from STEP 18.
+# -----------------------------------------------------------------------------
+variable "owner" {
+  description = "Owner tag applied to every resource via default_tags. The person/team accountable for the resource — surfaces in Cost Explorer and resource inventory."
+  type        = string
+  default     = "abhith-bn"
+}
+
+variable "cost_center" {
+  description = "CostCenter tag applied to every resource via default_tags. Used for cost-allocation grouping in Cost Explorer / Cost & Usage Reports once activated as a cost-allocation tag."
+  type        = string
+  default     = "devops"
+}
+
 variable "alert_email" {
   description = "Email address for SNS alert subscriptions (cost anomalies, security findings)"
   type        = string

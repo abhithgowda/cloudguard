@@ -7,11 +7,19 @@
 provider "aws" {
   region = var.aws_region
 
+  # STEP 24: default_tags propagates these 5 universal tags to EVERY taggable
+  # resource in the configuration automatically — the idiomatic post-2021 way
+  # to apply org-wide tags (supersedes manually merging a tags map in every
+  # module). Per-module `tags` inputs below add a finer-grained `Component`
+  # tag on top of these. resource-level tags win on key conflict, but none of
+  # these 5 keys are reused as a Component, so there is no collision.
   default_tags {
     tags = {
       Project     = var.project
       Environment = var.environment
       ManagedBy   = "terraform"
+      Owner       = var.owner
+      CostCenter  = var.cost_center
     }
   }
 }
@@ -45,6 +53,7 @@ locals {
 # -----------------------------------------------------------------------------
 module "iam" {
   source             = "../../modules/iam"
+  tags               = { Component = "iam" }
   environment        = var.environment
   project            = var.project
   reports_bucket_arn = local.reports_bucket_arn
@@ -62,6 +71,7 @@ module "iam" {
 # -----------------------------------------------------------------------------
 module "kms" {
   source      = "../../modules/kms"
+  tags        = { Component = "kms" }
   environment = var.environment
   project     = var.project
   lambda_role_arns = [
@@ -90,6 +100,7 @@ module "kms" {
 # -----------------------------------------------------------------------------
 module "dynamodb" {
   source      = "../../modules/dynamodb"
+  tags        = { Component = "dynamodb" }
   environment = var.environment
   project     = var.project
   kms_key_arn = module.kms.key_arn
@@ -104,6 +115,7 @@ module "dynamodb" {
 # -----------------------------------------------------------------------------
 module "s3" {
   source              = "../../modules/s3"
+  tags                = { Component = "reports-storage" }
   environment         = var.environment
   project             = var.project
   reports_bucket_name = local.reports_bucket_name
@@ -127,6 +139,7 @@ module "s3" {
 # -----------------------------------------------------------------------------
 module "sns" {
   source      = "../../modules/sns"
+  tags        = { Component = "alerting" }
   environment = var.environment
   project     = var.project
   kms_key_arn = module.kms.key_arn
@@ -164,6 +177,7 @@ module "cost_scanner" {
   project       = var.project
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-cost-scanner"
+  tags          = { Component = "cost-scanner" }
   role_arn      = module.iam.cost_scanner_role_arn
   source_dir    = "${path.root}/../../../src/cost_scanner/build"
   kms_key_arn   = module.kms.key_arn
@@ -186,6 +200,7 @@ module "security_scanner" {
   project       = var.project
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-security-scanner"
+  tags          = { Component = "security-scanner" }
   role_arn      = module.iam.security_scanner_role_arn
   source_dir    = "${path.root}/../../../src/security_scanner/build"
   kms_key_arn   = module.kms.key_arn
@@ -203,6 +218,7 @@ module "resource_cleanup" {
   project       = var.project
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-resource-cleanup"
+  tags          = { Component = "resource-cleanup" }
   role_arn      = module.iam.resource_cleanup_role_arn
   source_dir    = "${path.root}/../../../src/resource_cleanup/build"
   kms_key_arn   = module.kms.key_arn
@@ -225,6 +241,7 @@ module "report_generator" {
   project       = var.project
   environment   = var.environment
   function_name = "${var.project}-${var.environment}-report-generator"
+  tags          = { Component = "report-generator" }
   role_arn      = module.iam.report_generator_role_arn
   source_dir    = "${path.root}/../../../src/report_generator/build"
   kms_key_arn   = module.kms.key_arn
@@ -270,6 +287,7 @@ module "report_generator" {
 # -----------------------------------------------------------------------------
 module "step_functions" {
   source      = "../../modules/step-functions"
+  tags        = { Component = "orchestration" }
   project     = var.project
   environment = var.environment
   kms_key_arn = module.kms.key_arn
@@ -296,6 +314,7 @@ module "step_functions" {
 # -----------------------------------------------------------------------------
 module "eventbridge" {
   source      = "../../modules/eventbridge"
+  tags        = { Component = "scheduling" }
   project     = var.project
   environment = var.environment
 
@@ -323,6 +342,7 @@ module "eventbridge" {
 # -----------------------------------------------------------------------------
 module "github_oidc" {
   source             = "../../modules/github_oidc"
+  tags               = { Component = "cicd" }
   project            = var.project
   environment        = var.environment
   github_org         = var.github_org
@@ -347,6 +367,7 @@ module "github_oidc" {
 # -----------------------------------------------------------------------------
 module "cloudwatch" {
   source      = "../../modules/cloudwatch"
+  tags        = { Component = "monitoring" }
   project     = var.project
   environment = var.environment
   aws_region  = var.aws_region

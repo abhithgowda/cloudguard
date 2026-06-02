@@ -39,6 +39,13 @@ locals {
   # -- SNS alerts topic ARN (created in STEP 8) ------------------------------
   alerts_topic_arn = "arn:aws:sns:${local.region}:${local.account_id}:${local.name_prefix}-alerts"
 
+  # -- SES sender identity ARN (STEP 18.5 hardening) -------------------------
+  # For an email-address identity the ARN is identity/<address>. Scoping the
+  # report_generator role's ses:SendEmail to THIS ARN means the role can only
+  # invoke SendEmail authorised by this one verified identity — not any other
+  # identity that happens to be verified in the account.
+  ses_identity_arn = "arn:aws:ses:${local.region}:${local.account_id}:identity/${var.ses_sender_email}"
+
   # -- Lambda assume-role trust policy ---------------------------------------
   # Trust policy is identical for all 4 roles — only the Lambda service can
   # assume them. Defining once and reusing avoids drift.
@@ -231,12 +238,16 @@ resource "aws_iam_role_policy_attachment" "security_scanner_basic" {
 # Role 3: Resource Cleanup
 # Describes + DELETES zombie EBS volumes/EIPs; publishes SNS notifications.
 #
-# WARNING: this role has destructive permissions (DeleteVolume, ReleaseAddress,
-# DeleteSnapshot). In a hardened production setup, scope these with a Condition
-# on a tag like:
-#   "ec2:ResourceTag/AutoCleanup": "true"
-# That way the cleanup function can only delete resources explicitly marked
-# for cleanup. Hardening TODO — see PROGRESS.md.
+# This role has destructive permissions (DeleteVolume, ReleaseAddress,
+# DeleteSnapshot). STEP 18.5 hardening: those three actions are now gated by a
+# Condition on `ec2:ResourceTag/AutoCleanup = true`, so the cleanup Lambda can
+# only delete resources a human has explicitly tagged for cleanup — even if
+# both the AUTO_REMEDIATE env var AND the Step Functions event flag are flipped
+# on (STEP 12's two gates). This makes per-resource opt-in a THIRD, IAM-enforced
+# gate. NOTE the behavioural consequence: an untagged zombie can be DETECTED and
+# logged (the Describe* actions are unconditioned) but cannot be auto-deleted
+# until tagged. That is the intended safety posture, and dovetails with the
+# STEP 24 tagging strategy. See PROGRESS.md STEP 18.5.
 # =============================================================================
 resource "aws_iam_role" "resource_cleanup" {
   name               = "${local.name_prefix}-resource-cleanup-role"
@@ -262,9 +273,13 @@ resource "aws_iam_role_policy" "resource_cleanup" {
         Resource = "*"
       },
       {
-        # Destructive — see warning at top of this block.
-        # DeleteSnapshot added in STEP 12 for the snapshot-cleanup auto-
-        # remediate path; same Resource="*" + tag-Condition hardening TODO.
+        # Destructive — see the note at the top of this role block.
+        # STEP 18.5: gated by ec2:ResourceTag/AutoCleanup = "true". All three
+        # actions support the ec2:ResourceTag/${key} condition key against the
+        # resource being deleted (volume / elastic-ip / snapshot), so an
+        # untagged resource is denied at the IAM layer. Resource stays "*"
+        # because the resource IDs aren't known ahead of time — the Condition,
+        # not the Resource list, is what scopes the blast radius.
         Sid    = "EC2ZombieDelete"
         Effect = "Allow"
         Action = [
@@ -273,6 +288,11 @@ resource "aws_iam_role_policy" "resource_cleanup" {
           "ec2:DeleteSnapshot"
         ]
         Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/AutoCleanup" = "true"
+          }
+        }
       },
       {
         # UpdateItem + Query (on findings table only) added in STEP 21.5 for
@@ -356,14 +376,27 @@ resource "aws_iam_role_policy" "report_generator" {
         Resource = "${var.reports_bucket_arn}/*"
       },
       {
-        # SES SendEmail does not have resource-level perms in the classic
-        # sense — Resource is "*" with optional Conditions on identities.
-        # We'll add a Condition restricting to verified identities in a
-        # later hardening pass.
+        # STEP 18.5 hardening — two independent levers, both scoped to the one
+        # verified sender identity:
+        #   1. Resource = the SES identity ARN. ses:SendEmail DOES support
+        #      resource-level perms against the sending identity, so this caps
+        #      WHICH verified identity's authority the role may invoke.
+        #   2. Condition ses:FromAddress = the same address. This caps the
+        #      actual envelope-From header. For our email-address identity the
+        #      two collapse to the same address; for a *domain* identity the
+        #      Condition is what stops the role sending as arbitrary
+        #      addresses @ that domain. Belt-and-braces, and the distinction is
+        #      the interview point. Before this, Resource was "*" — a compromised
+        #      report role could send mail as any verified identity in the account.
         Sid      = "SESSendEmail"
         Effect   = "Allow"
         Action   = ["ses:SendEmail"]
-        Resource = "*"
+        Resource = local.ses_identity_arn
+        Condition = {
+          StringEquals = {
+            "ses:FromAddress" = var.ses_sender_email
+          }
+        }
       },
       {
         Sid      = "SNSPublishAlerts"

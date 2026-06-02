@@ -43,9 +43,9 @@ resource "aws_cloudwatch_log_group" "lambda" {
   retention_in_days = var.log_retention_days
   kms_key_id        = var.kms_key_arn
 
-  tags = {
+  tags = merge(var.tags, {
     Function = var.function_name
-  }
+  })
 }
 
 # -----------------------------------------------------------------------------
@@ -85,9 +85,9 @@ resource "aws_lambda_function" "this" {
     }
   }
 
-  tags = {
+  tags = merge(var.tags, {
     Function = var.function_name
-  }
+  })
 
   depends_on = [aws_cloudwatch_log_group.lambda]
 }

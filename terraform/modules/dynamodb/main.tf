@@ -29,6 +29,7 @@ locals {
 resource "aws_dynamodb_table" "findings" {
   name         = "${local.name_prefix}-findings"
   billing_mode = "PAY_PER_REQUEST"
+  tags         = merge(var.tags, { Name = "${local.name_prefix}-findings" })
   hash_key     = "finding_id"
   range_key    = "timestamp"
 
@@ -92,6 +93,7 @@ resource "aws_dynamodb_table" "findings" {
 resource "aws_dynamodb_table" "cost_data" {
   name         = "${local.name_prefix}-cost-data"
   billing_mode = "PAY_PER_REQUEST"
+  tags         = merge(var.tags, { Name = "${local.name_prefix}-cost-data" })
   hash_key     = "date"
   range_key    = "service_name"
 
@@ -125,6 +127,7 @@ resource "aws_dynamodb_table" "cost_data" {
 resource "aws_dynamodb_table" "remediation_log" {
   name         = "${local.name_prefix}-remediation-log"
   billing_mode = "PAY_PER_REQUEST"
+  tags         = merge(var.tags, { Name = "${local.name_prefix}-remediation-log" })
   hash_key     = "remediation_id"
   range_key    = "timestamp"
 

@@ -164,6 +164,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_error_rate" {
   # ArnLike pattern the SNS/KMS CloudWatch grants are scoped to.
   alarm_name          = "${each.key}-error-rate-high"
   alarm_description   = "Error rate for ${each.key} >= ${var.error_rate_threshold_percent}% over ${var.alarm_period_seconds}s. Computed as (Errors / Invocations) * 100."
+  tags                = merge(var.tags, { Name = "${each.key}-error-rate-high" })
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   threshold           = var.error_rate_threshold_percent
@@ -213,6 +214,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
   for_each = var.lambda_functions
 
   alarm_name          = "${each.key}-duration-high"
+  tags                = merge(var.tags, { Name = "${each.key}-duration-high" })
   alarm_description   = "Max duration for ${each.key} exceeded ${var.duration_threshold_ratio * 100}% of its ${each.value.timeout}s timeout — the function is approaching a hard timeout."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
@@ -238,6 +240,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_duration" {
 # =============================================================================
 resource "aws_cloudwatch_metric_alarm" "sfn_execution_failed" {
   alarm_name          = "${local.name_prefix}-sfn-execution-failed"
+  tags                = merge(var.tags, { Name = "${local.name_prefix}-sfn-execution-failed" })
   alarm_description   = "Step Functions state machine ${var.state_machine_name} had >= 1 FAILED execution in ${var.alarm_period_seconds}s."
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1

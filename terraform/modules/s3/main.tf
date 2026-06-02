@@ -43,10 +43,10 @@ locals {
 resource "aws_s3_bucket" "reports" {
   bucket = local.reports_bucket
 
-  tags = {
+  tags = merge(var.tags, {
     Name    = local.reports_bucket
     Purpose = "CloudGuard HTML/CSV reports - output of report_generator Lambda"
-  }
+  })
 }
 
 # -- Versioning ---------------------------------------------------------------
@@ -210,10 +210,10 @@ resource "aws_s3_bucket_policy" "reports" {
 resource "aws_s3_bucket" "logs" {
   bucket = local.logs_bucket
 
-  tags = {
+  tags = merge(var.tags, {
     Name    = local.logs_bucket
     Purpose = "S3 access logs for the CloudGuard reports bucket"
-  }
+  })
 }
 
 resource "aws_s3_bucket_versioning" "logs" {

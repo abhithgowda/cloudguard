@@ -38,10 +38,10 @@ resource "aws_sns_topic" "alerts" {
   name              = local.topic_name
   kms_master_key_id = var.kms_key_arn
 
-  tags = {
+  tags = merge(var.tags, {
     Name    = local.topic_name
     Purpose = "CloudGuard alert fan-out for cost / security / cleanup / report-generator notifications"
-  }
+  })
 }
 
 # =============================================================================

@@ -73,9 +73,9 @@ resource "aws_cloudwatch_event_rule" "scan_schedule" {
   schedule_expression = var.scan_schedule_expression
   state               = var.scan_rule_enabled ? "ENABLED" : "DISABLED"
 
-  tags = {
+  tags = merge(var.tags, {
     Name = local.scan_rule_name
-  }
+  })
 }
 
 resource "aws_cloudwatch_event_target" "scan_schedule" {
@@ -95,9 +95,9 @@ resource "aws_cloudwatch_event_rule" "daily_report" {
   schedule_expression = var.daily_report_schedule_expression
   state               = var.daily_report_rule_enabled ? "ENABLED" : "DISABLED"
 
-  tags = {
+  tags = merge(var.tags, {
     Name = local.daily_rule_name
-  }
+  })
 }
 
 resource "aws_cloudwatch_event_target" "daily_report" {
@@ -116,9 +116,9 @@ resource "aws_cloudwatch_event_rule" "weekly_report" {
   schedule_expression = var.weekly_report_schedule_expression
   state               = var.weekly_report_rule_enabled ? "ENABLED" : "DISABLED"
 
-  tags = {
+  tags = merge(var.tags, {
     Name = local.weekly_rule_name
-  }
+  })
 }
 
 resource "aws_cloudwatch_event_target" "weekly_report" {
@@ -137,6 +137,8 @@ resource "aws_cloudwatch_event_target" "weekly_report" {
 resource "aws_iam_role" "eventbridge" {
   name        = local.role_name
   description = "Role assumed by EventBridge to start CloudGuard Step Functions executions."
+
+  tags = merge(var.tags, { Name = local.role_name })
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

@@ -52,6 +52,8 @@ resource "aws_iam_openid_connect_provider" "github" {
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
   ]
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-github-oidc" })
 }
 
 locals {
@@ -105,6 +107,8 @@ resource "aws_iam_role" "github_plan" {
   name               = "${local.name_prefix}-github-plan-role"
   description        = "Assumed by GitHub Actions (any branch/PR) for terraform plan."
   assume_role_policy = data.aws_iam_policy_document.plan_assume_role.json
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-github-plan-role" })
 }
 
 # ReadOnlyAccess is AWS's blessed read-only managed policy. It covers all the
@@ -210,6 +214,8 @@ resource "aws_iam_role" "github_deploy" {
   name               = "${local.name_prefix}-github-deploy-role"
   description        = "Assumed by GitHub Actions ONLY from the deploy branch for terraform apply."
   assume_role_policy = data.aws_iam_policy_document.deploy_assume_role.json
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-github-deploy-role" })
 }
 
 # TODO (hardening pass): replace AdministratorAccess with a custom policy

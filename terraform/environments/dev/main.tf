@@ -48,6 +48,11 @@ module "iam" {
   environment        = var.environment
   project            = var.project
   reports_bucket_arn = local.reports_bucket_arn
+  # STEP 18.5: scope the report role's ses:SendEmail to this one verified
+  # sender (identity ARN + ses:FromAddress Condition). Same value the
+  # report_generator Lambda uses as SES_SENDER_EMAIL, so the grant and the
+  # runtime Source address are guaranteed to agree.
+  ses_sender_email = local.ses_sender_email
 }
 
 # -----------------------------------------------------------------------------

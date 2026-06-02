@@ -8,6 +8,12 @@ variable "environment" {
   description = "Environment name (dev/prod) — included in role names."
 }
 
+variable "tags" {
+  description = "Extra tags merged onto every taggable resource in this module, on top of the provider default_tags (STEP 24). The caller passes a Component tag for finer-grained cost allocation. Default empty keeps the module usable standalone."
+  type        = map(string)
+  default     = {}
+}
+
 variable "github_org" {
   type        = string
   description = "GitHub org or user that owns the repo (e.g. 'abhithcogni')."

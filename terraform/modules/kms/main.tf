@@ -350,6 +350,8 @@ resource "aws_kms_key" "main" {
   multi_region            = false
 
   policy = data.aws_iam_policy_document.kms_key_policy.json
+
+  tags = merge(var.tags, { Name = "${var.project}-${var.environment}-cmk" })
 }
 
 # =============================================================================

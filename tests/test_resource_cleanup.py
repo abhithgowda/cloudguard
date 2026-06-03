@@ -147,6 +147,69 @@ class TestFindOldSnapshots:
 
 
 # ---------------------------------------------------------------------------
+# STEP 25 follow-up — AutoCleanup=ignore suppression (detection-time skip)
+# ---------------------------------------------------------------------------
+
+
+class TestIgnoreTagSuppression:
+    def test_is_ignored_matrix(self):
+        ignored = lambda v: zombie_finder._is_ignored([{"Key": "AutoCleanup", "Value": v}])
+        assert ignored("ignore") is True
+        assert ignored("IGNORE") is True   # case-insensitive
+        assert ignored(" skip ") is True   # whitespace-tolerant
+        assert ignored("false") is True
+        assert ignored("no") is True
+        assert ignored("true") is False    # "ok to delete" is NOT suppression
+        # Wrong key, empty, and None must never suppress.
+        assert zombie_finder._is_ignored([{"Key": "Name", "Value": "ignore"}]) is False
+        assert zombie_finder._is_ignored([]) is False
+        assert zombie_finder._is_ignored(None) is False
+
+    def test_ignored_volume_not_detected(self):
+        ec2 = MagicMock()
+        paginator = _ec2_paginator([{"Volumes": [{
+            "VolumeId": "vol-keep", "Size": 100, "VolumeType": "gp3",
+            "AvailabilityZone": "ap-south-1a",
+            "CreateTime": datetime.now(timezone.utc),
+            "Tags": [{"Key": "AutoCleanup", "Value": "ignore"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        assert zombie_finder.find_zombie_ebs_volumes(ec2) == []
+
+    def test_true_tagged_volume_still_detected(self):
+        # AutoCleanup=true is "ok to delete", not suppression — must be detected.
+        ec2 = MagicMock()
+        paginator = _ec2_paginator([{"Volumes": [{
+            "VolumeId": "vol-del", "Size": 100, "VolumeType": "gp3",
+            "AvailabilityZone": "ap-south-1a",
+            "CreateTime": datetime.now(timezone.utc),
+            "Tags": [{"Key": "AutoCleanup", "Value": "true"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        findings = zombie_finder.find_zombie_ebs_volumes(ec2)
+        assert len(findings) == 1 and findings[0]["resource_id"] == "vol-del"
+
+    def test_ignored_eip_not_detected(self):
+        ec2 = MagicMock()
+        ec2.describe_addresses.return_value = {"Addresses": [
+            {"AllocationId": "eip-keep", "PublicIp": "1.2.3.4", "Domain": "vpc",
+             "Tags": [{"Key": "AutoCleanup", "Value": "skip"}]},
+        ]}
+        assert zombie_finder.find_unused_elastic_ips(ec2) == []
+
+    def test_ignored_snapshot_not_detected(self):
+        ec2 = MagicMock()
+        old = datetime.now(timezone.utc) - timedelta(days=200)
+        paginator = _ec2_paginator([{"Snapshots": [{
+            "SnapshotId": "snap-keep", "StartTime": old, "VolumeSize": 500,
+            "StorageTier": "standard",
+            "Tags": [{"Key": "AutoCleanup", "Value": "false"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        assert zombie_finder.find_old_snapshots(ec2, age_days=180) == []
+
+
+# ---------------------------------------------------------------------------
 # handler.py — the two-gate auto-remediate matrix (the unique surface)
 # ---------------------------------------------------------------------------
 

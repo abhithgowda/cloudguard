@@ -37,6 +37,7 @@ def mod(approval_env, handler_loader):
     m._sfn = MagicMock()
     m._ses = MagicMock()
     m._ssm = MagicMock()
+    m._ec2 = MagicMock()
     m._dynamodb = MagicMock()
     # table = m._dynamodb.Table(<name>) — the same MagicMock for assertions.
     m._table = m._dynamodb.Table.return_value
@@ -80,18 +81,22 @@ class TestNotify:
     def test_persists_token_then_emails(self, mod):
         result = mod.lambda_handler(self._event(), None)
 
-        # Token row written with PENDING status + TTL.
+        # Token row written with PENDING status + TTL + slim resource list
+        # (so the Ignore callback can tag exactly these).
         item = mod._table.put_item.call_args.kwargs["Item"]
         assert item["task_token"] == "task-token-xyz"
         assert item["status"] == "PENDING"
         assert item["approval_id"] == result["approval_id"]
         assert item["expires_at"] == result["expires_at"]
+        assert item["resources"] == [
+            {"resource_id": "vol-1", "resource_type": "aws_ebs_volume"}
+        ]
 
-        # Email sent once, containing both signed links with this approval_id.
+        # Email sent once, containing all three signed links with this approval_id.
         mod._ses.send_email.assert_called_once()
         html = mod._ses.send_email.call_args.kwargs["Message"]["Body"]["Html"]["Data"]
         assert f"id={result['approval_id']}" in html
-        assert "/approve?" in html and "/reject?" in html
+        assert "/approve?" in html and "/reject?" in html and "/ignore?" in html
 
     def test_ses_failure_raises(self, mod):
         mod._ses.send_email.side_effect = ClientError(
@@ -139,6 +144,27 @@ class TestCallback:
         mod._sfn.send_task_failure.assert_called_once()
         assert mod._sfn.send_task_failure.call_args.kwargs["error"] == "RemediationRejected"
         mod._sfn.send_task_success.assert_not_called()
+        mod._ec2.create_tags.assert_not_called()  # reject does NOT tag
+
+    def test_ignore_tags_resources_and_resolves_without_delete(self, mod):
+        mod._table.get_item.return_value = {"Item": {
+            "approval_id": "abc", "task_token": "task-token-xyz", "status": "PENDING",
+            "resources": [{"resource_id": "vol-1", "resource_type": "aws_ebs_volume"}],
+        }}
+        resp = mod.lambda_handler(self._signed_event(mod, "ignore"), None)
+
+        assert resp["statusCode"] == 200
+        assert "Ignored" in resp["body"]
+        # Tagged AutoCleanup=ignore on exactly the stored resource(s).
+        mod._ec2.create_tags.assert_called_once()
+        kw = mod._ec2.create_tags.call_args.kwargs
+        assert kw["Resources"] == ["vol-1"]
+        assert kw["Tags"] == [{"Key": "AutoCleanup", "Value": "ignore"}]
+        # Resolved as a failure (no delete) with the distinct ignore error.
+        mod._sfn.send_task_failure.assert_called_once()
+        assert mod._sfn.send_task_failure.call_args.kwargs["error"] == "RemediationIgnored"
+        mod._sfn.send_task_success.assert_not_called()
+        assert mod._table.update_item.call_args.kwargs["ExpressionAttributeValues"][":s"] == "IGNORED"
 
     def test_bad_signature_is_403_and_no_callback(self, mod):
         exp = int(time.time()) + 3600

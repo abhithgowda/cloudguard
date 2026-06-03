@@ -39,10 +39,23 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  scan_rule_name   = "${var.project}-${var.environment}-scan-schedule"
-  daily_rule_name  = "${var.project}-${var.environment}-daily-report"
-  weekly_rule_name = "${var.project}-${var.environment}-weekly-report"
-  role_name        = "${var.project}-${var.environment}-eventbridge-role"
+  scan_rule_name        = "${var.project}-${var.environment}-scan-schedule"
+  daily_rule_name       = "${var.project}-${var.environment}-daily-report"
+  weekly_rule_name      = "${var.project}-${var.environment}-weekly-report"
+  remediation_rule_name = "${var.project}-${var.environment}-remediation-schedule"
+  role_name             = "${var.project}-${var.environment}-eventbridge-role"
+
+  # Whether to wire the scheduled remediation trigger (STEP 25 follow-up).
+  # Off when the caller doesn't pass a remediation SM ARN — keeps the module
+  # usable without the remediation module.
+  remediation_enabled = var.remediation_state_machine_arn != ""
+
+  # Input the remediation SM receives. It needs no fields (DetectZombies sets
+  # mode=detect via the ASL Parameters), but a source tag aids execution-history
+  # triage in the SFN console.
+  remediation_input = jsonencode({
+    source = "eventbridge_remediation_schedule"
+  })
 
   # Inputs passed verbatim to each target. The state machine receives this as
   # its execution input; the report_generator Lambda receives it as the event.
@@ -129,6 +142,36 @@ resource "aws_cloudwatch_event_target" "weekly_report" {
 }
 
 # =============================================================================
+# Rule 4: Scheduled remediation — daily → human-in-the-loop remediation SM
+#         (STEP 25 follow-up). The SM self-gates: it runs DetectZombies and
+#         only emails an approval if the AnyZombies Choice finds something;
+#         otherwise it ends silently at NoZombies. Daily (not 6-hourly) to
+#         avoid stacking duplicate approval emails for a lingering zombie.
+# =============================================================================
+resource "aws_cloudwatch_event_rule" "remediation_schedule" {
+  count = local.remediation_enabled ? 1 : 0
+
+  name                = local.remediation_rule_name
+  description         = "CloudGuard ${var.environment}: run the human-in-the-loop remediation workflow on a schedule; it emails an approval ONLY when zombies are found (STEP 25)."
+  schedule_expression = var.remediation_schedule_expression
+  state               = var.remediation_rule_enabled ? "ENABLED" : "DISABLED"
+
+  tags = merge(var.tags, {
+    Name = local.remediation_rule_name
+  })
+}
+
+resource "aws_cloudwatch_event_target" "remediation_schedule" {
+  count = local.remediation_enabled ? 1 : 0
+
+  rule      = aws_cloudwatch_event_rule.remediation_schedule[0].name
+  target_id = "step-functions-remediation"
+  arn       = var.remediation_state_machine_arn
+  role_arn  = aws_iam_role.eventbridge.arn
+  input     = local.remediation_input
+}
+
+# =============================================================================
 # IAM role for EventBridge → Step Functions
 #
 # Step Functions targets need an IAM role to authorise StartExecution. Lambda
@@ -164,10 +207,13 @@ resource "aws_iam_role_policy" "start_execution" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "StartCloudGuardWorkflow"
-      Effect   = "Allow"
-      Action   = ["states:StartExecution"]
-      Resource = [var.state_machine_arn]
+      Sid    = "StartCloudGuardWorkflow"
+      Effect = "Allow"
+      Action = ["states:StartExecution"]
+      # Scan SM always; remediation SM too when wired (STEP 25). compact() drops
+      # the empty string when the remediation trigger isn't enabled, so the
+      # grant stays exactly as tight as the set of SMs this role actually starts.
+      Resource = compact([var.state_machine_arn, var.remediation_state_machine_arn])
     }]
   })
 }

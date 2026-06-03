@@ -42,6 +42,20 @@ SNAPSHOT_PRICE_PER_GB_MONTH = 0.05
 SEVERITY_HIGH_THRESHOLD_USD = 50.0
 SEVERITY_MEDIUM_THRESHOLD_USD = 10.0
 
+# -- Suppression (STEP 25 follow-up) -----------------------------------------
+# An operator who has decided to KEEP a resource tags it so CloudGuard stops
+# flagging it. We reuse the AutoCleanup tag key with an opt-out value:
+#   AutoCleanup = true                       → eligible for cleanup (IAM allows delete)
+#   AutoCleanup = ignore | skip | false | no → SUPPRESSED: never detected, so
+#                                              never a finding, never an approval email
+#   (absent / any other value)               → detected + emailed, but not deletable
+# Suppression happens at DETECTION time, so a suppressed resource is invisible
+# to both the scheduled scan and the remediation workflow. This is what makes a
+# "keep this" decision stick — a Reject only resolves one execution, whereas the
+# ignore tag stops the resource being re-detected at all.
+IGNORE_TAG_KEY = "AutoCleanup"
+IGNORE_TAG_VALUES = frozenset({"ignore", "skip", "false", "no"})
+
 
 def _severity_for_cost(monthly_cost_usd):
     """Map a monthly cost to a CloudGuard severity level."""
@@ -50,6 +64,18 @@ def _severity_for_cost(monthly_cost_usd):
     if monthly_cost_usd >= SEVERITY_MEDIUM_THRESHOLD_USD:
         return "MEDIUM"
     return "LOW"
+
+
+def _is_ignored(tags):
+    """True if the resource is tagged to be skipped by CloudGuard cleanup.
+
+    `tags` is the boto3 tag list (``[{"Key": ..., "Value": ...}, ...]``) from a
+    describe response. Matching is case-insensitive and whitespace-tolerant.
+    """
+    for t in tags or []:
+        if t.get("Key") == IGNORE_TAG_KEY and str(t.get("Value", "")).strip().lower() in IGNORE_TAG_VALUES:
+            return True
+    return False
 
 
 def _ebs_monthly_cost(size_gb, volume_type):
@@ -70,6 +96,9 @@ def find_zombie_ebs_volumes(ec2_client):
     for page in pages:
         for vol in page.get("Volumes", []):
             volume_id = vol["VolumeId"]
+            if _is_ignored(vol.get("Tags", [])):
+                logger.info("Skipping volume %s — AutoCleanup ignore tag", volume_id)
+                continue
             try:
                 size_gb = int(vol.get("Size", 0))
                 volume_type = vol.get("VolumeType", "unknown")
@@ -124,6 +153,13 @@ def find_unused_elastic_ips(ec2_client):
         if addr.get("AssociationId"):
             continue  # in use — skip
 
+        if _is_ignored(addr.get("Tags", [])):
+            logger.info(
+                "Skipping EIP %s — AutoCleanup ignore tag",
+                addr.get("AllocationId", "unknown"),
+            )
+            continue
+
         allocation_id = addr.get("AllocationId", "unknown")
         public_ip = addr.get("PublicIp", "unknown")
 
@@ -168,6 +204,9 @@ def find_old_snapshots(ec2_client, age_days=180):
     for page in pages:
         for snap in page.get("Snapshots", []):
             snapshot_id = snap.get("SnapshotId", "unknown")
+            if _is_ignored(snap.get("Tags", [])):
+                logger.info("Skipping snapshot %s — AutoCleanup ignore tag", snapshot_id)
+                continue
             try:
                 start_time = snap.get("StartTime")
                 if not isinstance(start_time, datetime):

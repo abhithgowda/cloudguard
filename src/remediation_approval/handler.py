@@ -62,6 +62,7 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 _ssm = boto3.client("ssm")
 _sfn = boto3.client("stepfunctions")
 _ses = boto3.client("ses")
+_ec2 = boto3.client("ec2")
 _dynamodb = boto3.resource("dynamodb")
 
 # Module-scope cache for the HMAC signing key — one SSM read per execution
@@ -69,7 +70,13 @@ _dynamodb = boto3.resource("dynamodb")
 _hmac_secret: str | None = None
 
 DEFAULT_TTL_SECONDS = 24 * 3600
-VALID_ACTIONS = ("approve", "reject")
+VALID_ACTIONS = ("approve", "reject", "ignore")
+
+# STEP 25 follow-up: the "Ignore" button stamps this tag so the cleanup
+# detector (zombie_finder._is_ignored) permanently skips the resource. Must
+# match zombie_finder's IGNORE_TAG_KEY / an opt-out value.
+IGNORE_TAG_KEY = "AutoCleanup"
+IGNORE_TAG_VALUE = "ignore"
 
 
 # ---------------------------------------------------------------------------
@@ -130,18 +137,27 @@ def _handle_notify(event) -> dict:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "execution_name": execution_name,
             "resource_count": len(resources),
+            # Slim resource list so the "Ignore" callback can tag exactly these
+            # resources AutoCleanup=ignore without re-deriving them.
+            "resources": [
+                {"resource_id": r.get("resource_id"), "resource_type": r.get("resource_type")}
+                for r in resources
+                if r.get("resource_id")
+            ],
             "environment": environment,
         }
     )
 
     approve_url = _build_link(api_base_url, approval_id, "approve", exp)
     reject_url = _build_link(api_base_url, approval_id, "reject", exp)
+    ignore_url = _build_link(api_base_url, approval_id, "ignore", exp)
 
     _send_email(
         environment=environment,
         resources=resources,
         approve_url=approve_url,
         reject_url=reject_url,
+        ignore_url=ignore_url,
         ttl_seconds=ttl_seconds,
     )
 
@@ -156,7 +172,7 @@ def _handle_notify(event) -> dict:
     return {"approval_id": approval_id, "resource_count": len(resources), "expires_at": exp}
 
 
-def _send_email(*, environment, resources, approve_url, reject_url, ttl_seconds) -> bool:
+def _send_email(*, environment, resources, approve_url, reject_url, ignore_url, ttl_seconds) -> bool:
     sender = os.environ["SES_SENDER_EMAIL"]
     recipient = os.environ["ALERT_EMAIL"]
 
@@ -193,20 +209,29 @@ def _send_email(*, environment, resources, approve_url, reject_url, ttl_seconds)
         f"<p style='margin:20px 0'>"
         f"<a href='{html.escape(approve_url)}' "
         f"style='background:#1a7f37;color:#fff;padding:10px 22px;text-decoration:none;"
-        f"border-radius:4px;margin-right:12px'>✓ Approve cleanup</a>"
+        f"border-radius:4px;margin-right:10px'>✓ Approve cleanup</a>"
         f"<a href='{html.escape(reject_url)}' "
         f"style='background:#b42318;color:#fff;padding:10px 22px;text-decoration:none;"
-        f"border-radius:4px'>✗ Reject</a></p>"
-        f"<p style='color:#666;font-size:13px'>These links are single-use and "
-        f"expire in {hours} hour(s). If you do nothing, the workflow times out "
-        f"and NO resources are deleted (fail-safe). Deletion also still requires "
-        f"the AUTO_REMEDIATE env gate and the per-resource AutoCleanup tag.</p>"
+        f"border-radius:4px;margin-right:10px'>✗ Reject</a>"
+        f"<a href='{html.escape(ignore_url)}' "
+        f"style='background:#6b7280;color:#fff;padding:10px 22px;text-decoration:none;"
+        f"border-radius:4px'>🚫 Ignore (keep forever)</a></p>"
+        f"<p style='color:#666;font-size:13px'>"
+        f"<strong>Approve</strong> deletes now · <strong>Reject</strong> skips "
+        f"this run (you'll be asked again next scan) · <strong>Ignore</strong> "
+        f"tags the resource(s) <code>{IGNORE_TAG_KEY}={IGNORE_TAG_VALUE}</code> "
+        f"so CloudGuard never flags them again.<br>"
+        f"Links are single-use and expire in {hours} hour(s). Do nothing and the "
+        f"workflow times out with NO deletion (fail-safe). Deletion also still "
+        f"requires the AUTO_REMEDIATE env gate and the AutoCleanup=true tag.</p>"
         f"</div>"
     )
     text_body = (
         f"CloudGuard {environment}: {len(resources)} zombie resource(s) "
-        f"(~${total_cost:.2f}/mo) awaiting approval.\n"
-        f"Approve: {approve_url}\nReject:  {reject_url}\n"
+        f"(~${total_cost:.2f}/mo) awaiting your decision.\n"
+        f"Approve (delete now): {approve_url}\n"
+        f"Reject (skip this run): {reject_url}\n"
+        f"Ignore (keep forever): {ignore_url}\n"
         f"Links expire in {hours}h. No action = no deletion.\n"
     )
 
@@ -273,13 +298,26 @@ def _handle_callback(event) -> dict:
         )
 
     task_token = item["task_token"]
+
+    # "Ignore" suppresses the resources for good (tag AutoCleanup=ignore) BEFORE
+    # resolving the token — so even if the SFN side has already timed out, the
+    # operator's keep-forever decision still lands.
+    if action == "ignore":
+        _tag_ignore(item.get("resources", []))
+
     try:
         if action == "approve":
             _sfn.send_task_success(
                 taskToken=task_token,
                 output=json.dumps({"approved": True, "approval_id": approval_id}),
             )
-        else:
+        elif action == "ignore":
+            _sfn.send_task_failure(
+                taskToken=task_token,
+                error="RemediationIgnored",
+                cause=f"Operator chose keep-forever; resources tagged {IGNORE_TAG_KEY}={IGNORE_TAG_VALUE} (approval_id={approval_id}).",
+            )
+        else:  # reject
             _sfn.send_task_failure(
                 taskToken=task_token,
                 error="RemediationRejected",
@@ -288,20 +326,42 @@ def _handle_callback(event) -> dict:
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
         # The task already resolved (timed out, or a duplicate click won the
-        # race). Treat as terminal, not a 500.
+        # race). Treat as terminal, not a 500. For ignore, the tag already
+        # landed above — still a useful outcome.
         if code in ("TaskTimedOut", "TaskDoesNotExist"):
-            _mark_decided(table, approval_id, "EXPIRED")
-            return _http(410, "Link expired", "The workflow already moved on (timeout or prior click).")
-        logger.exception("SendTask%s failed: %s", "Success" if action == "approve" else "Failure", e)
+            _mark_decided(table, approval_id, "IGNORED" if action == "ignore" else "EXPIRED")
+            extra = " The resource was still tagged to be ignored." if action == "ignore" else ""
+            return _http(410, "Link expired", "The workflow already moved on (timeout or prior click)." + extra)
+        logger.exception("SendTask call failed (action=%s): %s", action, e)
         return _http(500, "Error", "Failed to signal the workflow. Try again shortly.")
 
-    new_status = "APPROVED" if action == "approve" else "REJECTED"
+    new_status = {"approve": "APPROVED", "reject": "REJECTED", "ignore": "IGNORED"}[action]
     _mark_decided(table, approval_id, new_status)
-    logger.info("Approval %s: id=%s", new_status, approval_id)
+    logger.info("Decision %s: id=%s", new_status, approval_id)
 
     if action == "approve":
         return _http(200, "Approved", "Cleanup approved — the workflow will delete the listed resources.")
-    return _http(200, "Rejected", "Remediation rejected — no resources will be deleted.")
+    if action == "ignore":
+        return _http(
+            200, "Ignored",
+            f"Tagged {IGNORE_TAG_KEY}={IGNORE_TAG_VALUE} — CloudGuard won't flag these resources again. Nothing was deleted.",
+        )
+    return _http(200, "Rejected", "Remediation rejected — nothing deleted. CloudGuard may flag these again on the next scan.")
+
+
+def _tag_ignore(resources) -> None:
+    """Stamp AutoCleanup=ignore on the resources so the cleanup detector
+    (zombie_finder) permanently skips them. Best-effort: a tagging failure is
+    logged, not raised — the execution still resolves without deleting.
+    """
+    ids = [r.get("resource_id") for r in (resources or []) if r.get("resource_id")]
+    if not ids:
+        return
+    try:
+        _ec2.create_tags(Resources=ids, Tags=[{"Key": IGNORE_TAG_KEY, "Value": IGNORE_TAG_VALUE}])
+        logger.info("Tagged %s with %s=%s (operator chose Ignore)", ids, IGNORE_TAG_KEY, IGNORE_TAG_VALUE)
+    except ClientError as e:
+        logger.exception("create_tags failed for %s: %s", ids, e)
 
 
 def _mark_decided(table, approval_id: str, status: str) -> None:

@@ -520,6 +520,28 @@ resource "aws_iam_role_policy" "remediation_approval" {
             "ses:FromAddress" = var.ses_sender_email
           }
         }
+      },
+      {
+        # STEP 25 follow-up — the "Ignore (keep forever)" button tags the
+        # resource AutoCleanup=ignore so the cleanup detector skips it. The
+        # Condition pins this grant so the role can ONLY ever stamp
+        # AutoCleanup=ignore: aws:RequestTag/AutoCleanup must equal "ignore",
+        # and aws:TagKeys must contain nothing but AutoCleanup. So a compromised
+        # approval Lambda cannot, say, set AutoCleanup=true (which would make a
+        # resource deletable) or write arbitrary tags. Resource stays "*" — the
+        # resource IDs are only known at click time; the tag Condition is the scope.
+        Sid      = "TagResourcesIgnoreOnly"
+        Effect   = "Allow"
+        Action   = ["ec2:CreateTags"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/AutoCleanup" = "ignore"
+          }
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["AutoCleanup"]
+          }
+        }
       }
     ]
   })

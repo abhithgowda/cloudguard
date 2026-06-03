@@ -25,6 +25,11 @@ output "report_generator_role_arn" {
   value       = aws_iam_role.report_generator.arn
 }
 
+output "remediation_approval_role_arn" {
+  description = "ARN of the IAM role for the remediation approval Lambda (STEP 25)."
+  value       = aws_iam_role.remediation_approval.arn
+}
+
 # Role NAMES exported too — useful for IAM policy attachments and CloudTrail
 # searches where the name is more readable than the ARN.
 output "cost_scanner_role_name" {

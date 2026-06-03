@@ -39,6 +39,13 @@ locals {
   # -- SNS alerts topic ARN (created in STEP 8) ------------------------------
   alerts_topic_arn = "arn:aws:sns:${local.region}:${local.account_id}:${local.name_prefix}-alerts"
 
+  # -- STEP 25 human-approval resources (created in the remediation module) --
+  # Built here by naming convention — same pattern as the DynamoDB/SNS ARNs
+  # above — so the approval Lambda's role can be created before the remediation
+  # module's resources exist, with no module-ordering cycle.
+  approvals_table_arn = "arn:aws:dynamodb:${local.region}:${local.account_id}:table/${local.name_prefix}-approvals"
+  hmac_param_arn      = "arn:aws:ssm:${local.region}:${local.account_id}:parameter/${var.project}/${var.environment}/remediation/hmac-secret"
+
   # -- SES sender identity ARN (STEP 18.5 hardening) -------------------------
   # For an email-address identity the ARN is identity/<address>. Scoping the
   # report_generator role's ses:SendEmail to THIS ARN means the role can only
@@ -418,5 +425,107 @@ resource "aws_iam_role_policy" "report_generator" {
 
 resource "aws_iam_role_policy_attachment" "report_generator_basic" {
   role       = aws_iam_role.report_generator.name
+  policy_arn = local.basic_execution_policy_arn
+}
+
+# =============================================================================
+# Role 5: Remediation Approval (STEP 25 — human-in-the-loop)
+#
+# Backs the single remediation_approval Lambda, which runs in two modes:
+#   - NOTIFY  (Step Functions .waitForTaskToken target): persists the task
+#     token in the approvals table, reads the HMAC secret from SSM, emails the
+#     operator signed Approve/Reject links via SES.
+#   - CALLBACK (API Gateway target): verifies the signature, then calls
+#     states:SendTaskSuccess / SendTaskFailure to resume the paused execution.
+#
+# This role does NOT hold any destructive EC2 permission. Approving merely
+# resumes the workflow; the actual delete is performed by the resource_cleanup
+# role, still behind STEP 12's env/event gates and STEP 18.5's AutoCleanup tag.
+# =============================================================================
+resource "aws_iam_role" "remediation_approval" {
+  name               = "${local.name_prefix}-remediation-approval-role"
+  description        = "Role for CloudGuard remediation approval Lambda - sends approval emails and resumes paused Step Functions executions."
+  assume_role_policy = local.lambda_assume_role_policy
+
+  tags = merge(var.tags, { Name = "${local.name_prefix}-remediation-approval-role" })
+}
+
+resource "aws_iam_role_policy" "remediation_approval" {
+  name = "${local.name_prefix}-remediation-approval-policy"
+  role = aws_iam_role.remediation_approval.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # states:SendTaskSuccess/Failure/Heartbeat are token-based and do NOT
+        # support resource-level scoping (the task token, not the state machine
+        # ARN, identifies the target). Resource = "*" is the AWS API limitation,
+        # same situation as Cost Explorer above — not a design choice.
+        Sid    = "StepFunctionsCallback"
+        Effect = "Allow"
+        Action = [
+          "states:SendTaskSuccess",
+          "states:SendTaskFailure",
+          "states:SendTaskHeartbeat"
+        ]
+        Resource = "*"
+      },
+      {
+        # Approvals table: write the token row (notify), read + flip it to a
+        # terminal status (callback, single-use guard). Scoped to the one table.
+        Sid    = "ApprovalsTableReadWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem"
+        ]
+        Resource = [local.approvals_table_arn]
+      },
+      {
+        # Read the HMAC signing key (SSM SecureString). Scoped to the one
+        # parameter ARN.
+        Sid      = "ReadHmacSecret"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = [local.hmac_param_arn]
+      },
+      {
+        # Decrypt the SecureString via SSM. The parameter is encrypted with the
+        # AWS-managed alias/aws/ssm key (NOT the shared CMK — a deliberate
+        # scope-control choice, see PROGRESS.md STEP 25). kms:ViaService pins
+        # this grant to the SSM path, so the role can't use it to decrypt
+        # DynamoDB rows or S3 reports directly.
+        Sid      = "DecryptSecureStringViaSSM"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.${local.region}.amazonaws.com"
+          }
+        }
+      },
+      {
+        # Send the approval email. Same STEP 18.5 hardening as the report role:
+        # scoped to the one verified sender identity + a ses:FromAddress
+        # Condition.
+        Sid      = "SESSendApprovalEmail"
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail"]
+        Resource = local.ses_identity_arn
+        Condition = {
+          StringEquals = {
+            "ses:FromAddress" = var.ses_sender_email
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "remediation_approval_basic" {
+  role       = aws_iam_role.remediation_approval.name
   policy_arn = local.basic_execution_policy_arn
 }

@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-FUNCTIONS=("cost_scanner" "security_scanner" "resource_cleanup" "report_generator")
+FUNCTIONS=("cost_scanner" "security_scanner" "resource_cleanup" "report_generator" "remediation_approval")
 
 # Resolve repo root from this script's location so cwd doesn't matter.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

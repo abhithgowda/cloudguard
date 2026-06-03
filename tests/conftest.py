@@ -34,6 +34,7 @@ LAMBDA_DIRS = (
     "security_scanner",
     "resource_cleanup",
     "report_generator",
+    "remediation_approval",
 )
 
 # Dummy AWS config so module-level boto3.client(...) calls in handlers don't

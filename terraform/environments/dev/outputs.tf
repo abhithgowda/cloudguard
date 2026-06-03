@@ -183,6 +183,29 @@ output "github_deploy_role_arn" {
 }
 
 # -----------------------------------------------------------------------------
+# Remediation approval outputs (STEP 25)
+# -----------------------------------------------------------------------------
+output "remediation_state_machine_arn" {
+  description = "ARN of the human-in-the-loop remediation state machine. Start an execution here (console / CLI) to trigger an approval-gated cleanup."
+  value       = module.remediation.state_machine_arn
+}
+
+output "remediation_api_endpoint" {
+  description = "Base URL of the Approve/Reject HTTP API (STEP 25). The approval Lambda appends /approve or /reject + a signed query string."
+  value       = module.remediation.api_endpoint
+}
+
+output "remediation_approvals_table_name" {
+  description = "Name of the approvals DynamoDB table (approval_id → task token, TTL-purged)."
+  value       = module.remediation.approvals_table_name
+}
+
+output "remediation_approval_lambda_name" {
+  description = "Name of the remediation approval Lambda (notify + callback)."
+  value       = module.remediation_approval.function_name
+}
+
+# -----------------------------------------------------------------------------
 # CloudWatch outputs (STEP 22)
 # -----------------------------------------------------------------------------
 output "cloudwatch_dashboard_name" {

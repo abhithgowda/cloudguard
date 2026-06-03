@@ -28,6 +28,16 @@ output "weekly_report_rule_arn" {
   value       = aws_cloudwatch_event_rule.weekly_report.arn
 }
 
+output "remediation_schedule_rule_name" {
+  description = "Name of the scheduled remediation EventBridge rule (target: remediation state machine). null when the remediation trigger isn't wired."
+  value       = try(aws_cloudwatch_event_rule.remediation_schedule[0].name, null)
+}
+
+output "remediation_schedule_rule_arn" {
+  description = "ARN of the scheduled remediation EventBridge rule. null when not wired."
+  value       = try(aws_cloudwatch_event_rule.remediation_schedule[0].arn, null)
+}
+
 output "role_arn" {
   description = "ARN of the IAM role EventBridge assumes to invoke Step Functions."
   value       = aws_iam_role.eventbridge.arn

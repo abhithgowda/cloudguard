@@ -36,6 +36,12 @@ variable "report_lambda_name" {
   type        = string
 }
 
+variable "remediation_state_machine_arn" {
+  description = "ARN of the human-in-the-loop remediation state machine (STEP 25). When non-empty, a scheduled rule fires it so it detects zombies and emails an approval ONLY if any are found (the SM's AnyZombies Choice self-gates). Empty string disables the rule, keeping the module standalone."
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Schedule expressions
 #
@@ -69,6 +75,19 @@ variable "weekly_report_schedule_expression" {
   EOT
   type        = string
   default     = "cron(30 2 ? * MON *)"
+}
+
+variable "remediation_schedule_expression" {
+  description = <<-EOT
+    Schedule for the human-in-the-loop remediation workflow (STEP 25 follow-up).
+    Default: 03:30 UTC daily (09:00 IST). DAILY rather than 6-hourly on purpose:
+    a .waitForTaskToken execution waits up to 24h, so a 6-hourly trigger would
+    stack ~4 approval emails + 4 paused executions for the same lingering zombie.
+    Detection/findings still refresh on the 6-hourly scan; this only controls how
+    often you get an "approve cleanup?" email when a zombie actually exists.
+  EOT
+  type        = string
+  default     = "cron(30 3 * * ? *)"
 }
 
 # -----------------------------------------------------------------------------
@@ -135,6 +154,12 @@ variable "daily_report_rule_enabled" {
 
 variable "weekly_report_rule_enabled" {
   description = "Set false to disable the weekly report rule without destroying it."
+  type        = bool
+  default     = true
+}
+
+variable "remediation_rule_enabled" {
+  description = "Set false to disable the scheduled remediation rule without destroying it (the manual 'Start execution' path still works)."
   type        = bool
   default     = true
 }

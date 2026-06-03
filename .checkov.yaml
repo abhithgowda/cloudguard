@@ -7,6 +7,12 @@
 # Triaged against Checkov 3.2.530 on 2026-05-29 — 224 passed, 19 failed. All
 # 19 are suppressed below. Re-triage after any module change.
 #
+# Re-triaged 2026-06-03 (STEP 25, Checkov 3.2.532): 279 passed, 4 new failures
+# in modules/remediation suppressed below (CKV_AWS_309 x2, CKV_AWS_337,
+# CKV_AWS_76) — 23 suppression IDs total. The new role's Resource="*" grants
+# (states:SendTask*, kms:Decrypt-via-ssm) did NOT add findings — already
+# covered by the global CKV_AWS_355/_290 suppressions.
+#
 # Run locally:
 #   cloudguard-env/Scripts/python -m checkov.main --config-file .checkov.yaml
 # =============================================================================
@@ -142,3 +148,40 @@ skip-check:
   # always applies to the key it's attached to, the Resource field is a
   # structural placeholder, not a permission scope.
   - CKV_AWS_356
+
+  # ---------------------------------------------------------------------------
+  # STEP 25 (human-in-the-loop remediation) — re-triaged 2026-06-03.
+  # ---------------------------------------------------------------------------
+
+  # CKV_AWS_309 — API GatewayV2 routes specify an authorization type.
+  # Fires on: module.remediation.aws_apigatewayv2_route.approve / .reject.
+  # Justified BY DESIGN: these are PUBLIC callback endpoints hit from an email
+  # link by an operator who holds no AWS credentials, so an IAM/JWT/Cognito
+  # authorizer is impossible. Authorization is enforced in-Lambda by an
+  # action-bound HMAC signature + expiry + single-use check (STEP 25 decision
+  # 3b) — a tampered or replayed link is rejected with 403 before any state
+  # change. The HMAC IS the authorizer; API Gateway is just transport.
+  - CKV_AWS_309
+
+  # CKV_AWS_337 — SSM parameters are encrypted with a KMS CMK.
+  # Fires on: module.remediation.aws_ssm_parameter.hmac_secret.
+  # Justified: the HMAC SecureString is encrypted with the AWS-managed
+  # alias/aws/ssm key, NOT the shared CMK — a deliberate scope-control choice
+  # (STEP 25) so the CMK key policy needs no ssm:ViaService grant. It is still
+  # KMS-encrypted at rest; the approval Lambda's kms:Decrypt is pinned to
+  # kms:ViaService = ssm.<region>. Revisit for prod if the "everything under
+  # one CMK" posture is required (would add an AllowLambdasViaSSM statement to
+  # the kms module).
+  - CKV_AWS_337
+
+  # CKV_AWS_76 — API Gateway has Access Logging enabled.
+  # Fires on: module.remediation.aws_apigatewayv2_stage.default.
+  # Justified: the only routes are two human-clicked Approve/Reject callbacks,
+  # and the remediation_approval Lambda already logs every auth decision
+  # (signature pass/fail, expiry, single-use, SendTask outcome) to its own
+  # CMK-encrypted log group — so API-access logs are redundant here. Enabling
+  # them cleanly would need either an un-CMK'd access-log group (which then
+  # trips CKV_AWS_158) or widening the shared CMK key policy with a log-delivery
+  # grant — net-negative for a two-route endpoint. Revisit if the API ever
+  # serves real traffic.
+  - CKV_AWS_76

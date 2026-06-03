@@ -130,6 +130,15 @@ resource "aws_apigatewayv2_route" "reject" {
   target    = "integrations/${aws_apigatewayv2_integration.approval.id}"
 }
 
+# "Ignore (keep forever)" — the callback tags the resources AutoCleanup=ignore
+# so the cleanup detector permanently skips them, then resolves the execution
+# without deleting (SendTaskFailure → RemediationIgnored).
+resource "aws_apigatewayv2_route" "ignore" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "GET /ignore"
+  target    = "integrations/${aws_apigatewayv2_integration.approval.id}"
+}
+
 # $default stage with auto-deploy: the api_endpoint resolves at the root (no
 # stage path segment), so the email link is {api_endpoint}/approve?... .
 resource "aws_apigatewayv2_stage" "default" {
@@ -326,6 +335,11 @@ locals {
             ResultPath  = "$.error"
           },
           {
+            ErrorEquals = ["RemediationIgnored"]
+            Next        = "RemediationIgnored"
+            ResultPath  = "$.error"
+          },
+          {
             ErrorEquals = ["States.ALL"]
             Next        = "ApprovalFailed"
             ResultPath  = "$.error"
@@ -356,10 +370,18 @@ locals {
         End = true
       }
 
-      # Rejected / timed out are clean terminals — NO deletion happened.
+      # Rejected / ignored / timed out are clean terminals — NO deletion happened.
       RemediationRejected = {
         Type   = "Pass"
         Result = { status = "REJECTED" }
+        End    = true
+      }
+
+      # Ignored: the callback already tagged the resources AutoCleanup=ignore,
+      # so the cleanup detector will skip them on every future run.
+      RemediationIgnored = {
+        Type   = "Pass"
+        Result = { status = "IGNORED" }
         End    = true
       }
 

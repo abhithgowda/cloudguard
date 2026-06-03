@@ -233,10 +233,15 @@ module "resource_cleanup" {
     SNS_TOPIC_ARN         = module.sns.topic_arn
     ENVIRONMENT           = var.environment
     LOG_LEVEL             = "INFO"
-    # Dry-run by default — actual deletes only happen when the Step Functions
-    # input or EventBridge target overrides this. Safety rail for the
-    # destructive permissions in the resource_cleanup role.
-    AUTO_REMEDIATE = "false"
+    # STEP 25 follow-up: ARMED (gate 1 = true). A real delete still needs the
+    # per-invocation event flag (gate 2) AND the AutoCleanup tag (gate 3) AND
+    # human approval (gate 4). The 6-hourly scan passes auto_remediate=false, so
+    # it stays dry-run; ONLY the approval workflow's DeleteApproved step (which
+    # sets the event flag true) can actually delete, and only after a human
+    # clicks Approve on a resource a human tagged AutoCleanup=true. Arming this
+    # env var spends the per-env master switch — the event flag + tag + approval
+    # are now the live guards. See PROGRESS.md STEP 25 follow-up.
+    AUTO_REMEDIATE = "true"
   }
 }
 
@@ -326,8 +331,16 @@ module "eventbridge" {
   report_lambda_arn  = module.report_generator.function_arn
   report_lambda_name = module.report_generator.function_name
 
-  # Scheduled scans are dry-run by default. See module docs for details.
+  # Scheduled SCAN stays dry-run (event flag false). Even with the cleanup
+  # Lambda's AUTO_REMEDIATE env var now armed (below), the 6-hourly scan can't
+  # delete — a real delete needs BOTH gates, and this flag stays false.
   auto_remediate = false
+
+  # STEP 25 follow-up: fire the human-in-the-loop remediation workflow daily.
+  # It self-gates (DetectZombies → AnyZombies Choice) — emails an approval only
+  # when a zombie exists, ends silently otherwise. Daily, not 6-hourly, to
+  # avoid stacking duplicate approval emails for a lingering zombie.
+  remediation_state_machine_arn = module.remediation.state_machine_arn
 }
 
 # -----------------------------------------------------------------------------

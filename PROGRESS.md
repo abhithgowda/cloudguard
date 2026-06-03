@@ -1057,7 +1057,7 @@ A deliberately complete log of everything that broke this session and how it was
 ### ⬜ STEP 23 — Write Documentation *(+ README "Known Limitations" section for the 4 dropped trigger-conditional items)*
 ### ⬜ STEP 24 — Add Resource Tagging Strategy
 ### ✅ STEP 25 — *(post-DoD stretch)* Human-in-the-loop remediation with `.waitForTaskToken`
-*IaC + Lambda authored: 2026-06-03. Branch `step-25-human-approval` off `main` (PR #9 merged). Deploy via CI.*
+*IaC + Lambda authored: 2026-06-03. Branch `step-25-human-approval` off `main` (PR #9 merged). Commit `d4bb27f` (18 files, +1619/-19). Deploy via CI.*
 
 **What it is.** A FOURTH gate on the cleanup Lambda's destructive path: an operator must approve via an emailed Approve/Reject link before any zombie is deleted. Implemented as the canonical Step Functions `.waitForTaskToken` async-callback pattern. This is the concrete answer to the DoD interview question "Why Step Functions instead of chaining Lambdas with SNS/SQS?" — a paused execution costs nothing, survives up to a year, and is fully visible in the console; rebuilding it on SNS/SQS means hand-rolling a token store + a state machine on DynamoDB.
 

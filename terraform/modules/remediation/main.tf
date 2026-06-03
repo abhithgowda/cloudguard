@@ -286,9 +286,9 @@ locals {
       AnyZombies = {
         Type = "Choice"
         Choices = [{
-          Variable          = "$.detect.resource_count"
+          Variable           = "$.detect.resource_count"
           NumericGreaterThan = 0
-          Next              = "RequestApproval"
+          Next               = "RequestApproval"
         }]
         Default = "NoZombies"
       }
@@ -306,10 +306,10 @@ locals {
         Parameters = {
           FunctionName = var.approval_lambda_arn
           Payload = {
-            "taskToken.$"      = "$$.Task.Token"
-            "resources.$"      = "$.detect.resources"
-            "executionName.$"  = "$$.Execution.Name"
-            apiBaseUrl         = aws_apigatewayv2_api.this.api_endpoint
+            "taskToken.$"     = "$$.Task.Token"
+            "resources.$"     = "$.detect.resources"
+            "executionName.$" = "$$.Execution.Name"
+            apiBaseUrl        = aws_apigatewayv2_api.this.api_endpoint
           }
         }
         TimeoutSeconds = var.approval_timeout_seconds
@@ -341,9 +341,9 @@ locals {
         Parameters = {
           FunctionName = var.cleanup_lambda_arn
           Payload = {
-            mode             = "remediate"
-            auto_remediate   = true
-            "resources.$"    = "$.detect.resources"
+            mode           = "remediate"
+            auto_remediate = true
+            "resources.$"  = "$.detect.resources"
           }
         }
         ResultPath = "$.remediation"

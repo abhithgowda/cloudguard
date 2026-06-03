@@ -16,6 +16,22 @@ the event flag for scheduled scans, so the default is still detect-only;
 manual Step Functions invocations pass the flag explicitly when remediation
 is intended.
 
+Invocation modes (STEP 25 — human-in-the-loop split; `event["mode"]`):
+  - "scan"      (default, UNCHANGED): detect zombies, upsert findings, then
+                remediate IF both gates are armed (else dry-run log). This is
+                exactly the pre-STEP-25 behaviour the 6-hourly EventBridge scan
+                relies on — omitting `mode` keeps the old path bit-for-bit.
+  - "detect":   detect + upsert findings ONLY, and RETURN the resource list.
+                No remediation, not even a dry-run log row — the delete
+                decision belongs to the human approving downstream. Feeds the
+                approval email + the later "remediate" call.
+  - "remediate": delete an EXPLICIT, pre-approved `event["resources"]` list.
+                Does NOT re-detect (avoids a TOCTOU gap between detect and
+                approval). The two gates above STILL apply, so dev stays
+                dry-run until AUTO_REMEDIATE is flipped. STEP 25 adds human
+                approval as a FOURTH gate upstream in the Step Functions graph;
+                STEP 18.5's IAM AutoCleanup tag is the third at the API layer.
+
 Wiring: env vars FINDINGS_TABLE, REMEDIATION_LOG_TABLE, SNS_TOPIC_ARN,
 ENVIRONMENT, LOG_LEVEL, AUTO_REMEDIATE injected by the lambda Terraform
 module (terraform/environments/dev/main.tf).
@@ -169,12 +185,13 @@ def _remediate(findings, remediation_log_table_name, dry_run):
     return {"success": success, "failed": failed, "skipped_dry_run": skipped}
 
 
-# -- Entrypoint --------------------------------------------------------------
-def lambda_handler(event, context):
-    findings_table_name = os.environ["FINDINGS_TABLE"]
-    remediation_log_table_name = os.environ["REMEDIATION_LOG_TABLE"]
-    snapshot_age_days = int(os.environ.get("SNAPSHOT_AGE_DAYS", "180"))
+# -- Detection ---------------------------------------------------------------
+def _detect(findings_table_name, snapshot_age_days):
+    """Run all three zombie finders, stamp + upsert findings, return them.
 
+    Shared by the "scan" and "detect" modes — detection is identical; only
+    what happens AFTER (remediate vs hand the list to a human) differs.
+    """
     volumes = find_zombie_ebs_volumes(ec2)
     eips = find_unused_elastic_ips(ec2)
     snapshots = find_old_snapshots(ec2, age_days=snapshot_age_days)
@@ -185,21 +202,101 @@ def lambda_handler(event, context):
     # volume re-detected next scan updates last_seen instead of inserting
     # a duplicate. Float→Decimal coercion is still recursive via the helper.
     upsert_counts = batch_upsert_findings(findings_table_name, all_findings)
-    findings_written = upsert_counts["total"]
 
+    counts = {"volumes": len(volumes), "eips": len(eips), "snapshots": len(snapshots)}
+    return all_findings, upsert_counts, counts
+
+
+def _to_resource_summary(finding):
+    """Slim, JSON-safe view of a finding for the approval email + delete step.
+
+    Carries only what the operator needs to decide and what `_remediate`
+    needs to act (resource_id + resource_type). `monthly_cost_usd` is coerced
+    to float so the value round-trips cleanly through Step Functions / API
+    Gateway JSON.
+    """
+    metadata = finding.get("metadata") or {}
+    return {
+        "resource_id": finding["resource_id"],
+        "resource_type": finding["resource_type"],
+        "finding_id": finding.get("finding_id"),
+        "severity": finding.get("severity"),
+        "monthly_cost_usd": float(metadata.get("monthly_cost_usd", 0) or 0),
+        "description": finding.get("description", ""),
+    }
+
+
+# -- Remediate mode (STEP 25) ------------------------------------------------
+def _handle_remediate(event, remediation_log_table_name):
+    """Delete an EXPLICIT, human-approved resource list — no re-detection.
+
+    The resources were captured at detect time and approved by an operator via
+    the Step Functions `.waitForTaskToken` callback. Re-detecting here would
+    reopen a TOCTOU gap (a resource appearing/disappearing between detection
+    and approval). The two STEP 12 gates STILL apply: unless AUTO_REMEDIATE is
+    "true" AND the event flag is set, this is a dry-run.
+    """
+    resources = event.get("resources", []) if isinstance(event, dict) else []
+    armed = _auto_remediate_enabled(event)
+    remediation_counts = _remediate(resources, remediation_log_table_name, dry_run=not armed)
+
+    summary = {
+        "mode": "remediate",
+        "resources_requested": len(resources),
+        "auto_remediate_armed": armed,
+        "remediations": remediation_counts,
+    }
+    logger.info("Remediate summary: %s", json.dumps(summary))
+    return summary
+
+
+# -- Entrypoint --------------------------------------------------------------
+def lambda_handler(event, context):
+    event = event if isinstance(event, dict) else {}
+    mode = event.get("mode", "scan")
+
+    findings_table_name = os.environ["FINDINGS_TABLE"]
+    remediation_log_table_name = os.environ["REMEDIATION_LOG_TABLE"]
+    snapshot_age_days = int(os.environ.get("SNAPSHOT_AGE_DAYS", "180"))
+
+    # STEP 25: act on a pre-approved list. Detection already happened upstream.
+    if mode == "remediate":
+        return _handle_remediate(event, remediation_log_table_name)
+
+    all_findings, upsert_counts, counts = _detect(findings_table_name, snapshot_age_days)
     estimated_savings = sum(
         f.get("metadata", {}).get("monthly_cost_usd", 0) for f in all_findings
     )
 
+    # STEP 25: detection-only — return the list for the human-approval flow.
+    # Deliberately no _remediate call: not even a dry-run row, because the
+    # delete intent hasn't been formed yet (the human hasn't decided).
+    if mode == "detect":
+        summary = {
+            "mode": "detect",
+            "volumes_found": counts["volumes"],
+            "eips_found": counts["eips"],
+            "snapshots_found": counts["snapshots"],
+            "resource_count": len(all_findings),
+            "findings_written": upsert_counts["total"],
+            "new_findings": upsert_counts["inserted"],
+            "updated_findings": upsert_counts["updated"],
+            "estimated_monthly_savings_usd": round(float(estimated_savings), 2),
+            "resources": [_to_resource_summary(f) for f in all_findings],
+        }
+        logger.info("Detect summary: %s", json.dumps(summary))
+        return summary
+
+    # mode == "scan" (default) — pre-STEP-25 behaviour, unchanged. dry_run is
+    # True unless BOTH gates passed.
     armed = _auto_remediate_enabled(event)
-    # dry_run is True unless BOTH gates passed.
     remediation_counts = _remediate(all_findings, remediation_log_table_name, dry_run=not armed)
 
     summary = {
-        "volumes_found": len(volumes),
-        "eips_found": len(eips),
-        "snapshots_found": len(snapshots),
-        "findings_written": findings_written,
+        "volumes_found": counts["volumes"],
+        "eips_found": counts["eips"],
+        "snapshots_found": counts["snapshots"],
+        "findings_written": upsert_counts["total"],
         "new_findings": upsert_counts["inserted"],
         "updated_findings": upsert_counts["updated"],
         "estimated_monthly_savings_usd": round(float(estimated_savings), 2),

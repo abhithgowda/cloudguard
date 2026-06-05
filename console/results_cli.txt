@@ -1,0 +1,97 @@
+terraform scan results:
+
+Passed checks: 224, Failed checks: 19, Skipped checks: 0
+
+Check: CKV_AWS_355: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
+	FAILED for resource: module.iam.aws_iam_role_policy.cost_scanner
+	File: \modules\iam\main.tf:73-121
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-355
+Check: CKV_AWS_355: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
+	FAILED for resource: module.iam.aws_iam_role_policy.security_scanner
+	File: \modules\iam\main.tf:138-211
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-355
+Check: CKV_AWS_355: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
+	FAILED for resource: module.iam.aws_iam_role_policy.resource_cleanup
+	File: \modules\iam\main.tf:235-283
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-355
+Check: CKV_AWS_290: "Ensure IAM policies does not allow write access without constraints"
+	FAILED for resource: module.iam.aws_iam_role_policy.resource_cleanup
+	File: \modules\iam\main.tf:235-283
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-290
+Check: CKV_AWS_355: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
+	FAILED for resource: module.iam.aws_iam_role_policy.report_generator
+	File: \modules\iam\main.tf:300-355
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-355
+Check: CKV_AWS_290: "Ensure IAM policies does not allow write access without constraints"
+	FAILED for resource: module.iam.aws_iam_role_policy.report_generator
+	File: \modules\iam\main.tf:300-355
+	Calling File: \environments\dev\main.tf:46-51
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-290
+Check: CKV_AWS_109: "Ensure IAM policies does not allow permissions management / resource exposure without constraints"
+	FAILED for resource: module.kms.aws_iam_policy_document.kms_key_policy
+	File: \modules\kms\main.tf:75-248
+	Calling File: \environments\dev\main.tf:58-68
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/ensure-iam-policies-do-not-allow-permissions-management-resource-exposure-without-constraint
+Check: CKV_AWS_356: "Ensure no IAM policies documents allow "*" as a statement's resource for restrictable actions"
+	FAILED for resource: module.kms.aws_iam_policy_document.kms_key_policy
+	File: \modules\kms\main.tf:75-248
+	Calling File: \environments\dev\main.tf:58-68
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-iam-policies/bc-aws-356
+Check: CKV_AWS_338: "Ensure CloudWatch log groups retains logs for at least 1 year"
+	FAILED for resource: module.cost_scanner.aws_cloudwatch_log_group.lambda
+	File: \modules\lambda\main.tf:41-49
+	Calling File: \environments\dev\main.tf:143-163
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-logging-policies/bc-aws-338
+Check: CKV_AWS_272: "Ensure AWS Lambda function is configured to validate code-signing"
+	FAILED for resource: module.cost_scanner.aws_lambda_function.this
+	File: \modules\lambda\main.tf:59-93
+	Calling File: \environments\dev\main.tf:143-163
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/bc-aws-272
+Check: CKV_AWS_338: "Ensure CloudWatch log groups retains logs for at least 1 year"
+	FAILED for resource: module.report_generator.aws_cloudwatch_log_group.lambda
+	File: \modules\lambda\main.tf:41-49
+	Calling File: \environments\dev\main.tf:204-234
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-logging-policies/bc-aws-338
+Check: CKV_AWS_272: "Ensure AWS Lambda function is configured to validate code-signing"
+	FAILED for resource: module.report_generator.aws_lambda_function.this
+	File: \modules\lambda\main.tf:59-93
+	Calling File: \environments\dev\main.tf:204-234
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/bc-aws-272
+Check: CKV_AWS_338: "Ensure CloudWatch log groups retains logs for at least 1 year"
+	FAILED for resource: module.resource_cleanup.aws_cloudwatch_log_group.lambda
+	File: \modules\lambda\main.tf:41-49
+	Calling File: \environments\dev\main.tf:182-202
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-logging-policies/bc-aws-338
+Check: CKV_AWS_272: "Ensure AWS Lambda function is configured to validate code-signing"
+	FAILED for resource: module.resource_cleanup.aws_lambda_function.this
+	File: \modules\lambda\main.tf:59-93
+	Calling File: \environments\dev\main.tf:182-202
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/bc-aws-272
+Check: CKV_AWS_338: "Ensure CloudWatch log groups retains logs for at least 1 year"
+	FAILED for resource: module.security_scanner.aws_cloudwatch_log_group.lambda
+	File: \modules\lambda\main.tf:41-49
+	Calling File: \environments\dev\main.tf:165-180
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-logging-policies/bc-aws-338
+Check: CKV_AWS_272: "Ensure AWS Lambda function is configured to validate code-signing"
+	FAILED for resource: module.security_scanner.aws_lambda_function.this
+	File: \modules\lambda\main.tf:59-93
+	Calling File: \environments\dev\main.tf:165-180
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/bc-aws-272
+Check: CKV_AWS_338: "Ensure CloudWatch log groups retains logs for at least 1 year"
+	FAILED for resource: module.step_functions.aws_cloudwatch_log_group.sfn
+	File: \modules\step-functions\main.tf:184-192
+	Calling File: \environments\dev\main.tf:252-261
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-logging-policies/bc-aws-338
+Check: CKV_AWS_144: "Ensure that S3 bucket has cross-region replication enabled"
+	FAILED for resource: module.s3.aws_s3_bucket.reports
+	File: \modules\s3\main.tf:43-50
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/ensure-that-s3-bucket-has-cross-region-replication-enabled
+Check: CKV_AWS_144: "Ensure that S3 bucket has cross-region replication enabled"
+	FAILED for resource: module.s3.aws_s3_bucket.logs
+	File: \modules\s3\main.tf:210-217
+	Guide: https://docs.prismacloud.io/en/enterprise-edition/policy-reference/aws-policies/aws-general-policies/ensure-that-s3-bucket-has-cross-region-replication-enabled

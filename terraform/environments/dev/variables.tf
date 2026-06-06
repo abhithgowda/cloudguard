@@ -68,7 +68,7 @@ variable "report_window_hours" {
 variable "github_org" {
   description = "GitHub org or user that owns the cloudguard repo. Used by the github_oidc module to scope the trust policy of the plan + deploy roles."
   type        = string
-  default     = "abhithcogni"
+  default     = "abhithgowda"
 }
 
 variable "github_repo" {
@@ -80,7 +80,7 @@ variable "github_repo" {
 variable "state_bucket_name" {
   description = "Name of the S3 bucket holding the Terraform remote state for this environment. Passed to the github_oidc module so the plan role can acquire S3 native locks."
   type        = string
-  default     = "cloudguard-tf-state-abhithcogni"
+  default     = "cloudguard-tf-state-abhithgowda"
 }
 
 variable "bucket_suffix" {

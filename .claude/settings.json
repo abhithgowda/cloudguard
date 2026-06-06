@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git commit -m ' *)",
-      "PowerShell(git push origin main 2>&1)",
-      "Bash(gh pr *)"
-    ]
-  }
-}

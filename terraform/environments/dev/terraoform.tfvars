@@ -1,0 +1,5 @@
+aws_region    = "ap-south-1"
+environment   = "dev"
+project       = "cloudguard"
+alert_email   = "abhithgowdaa@gmail.com"
+bucket_suffix = "abhithgowda"

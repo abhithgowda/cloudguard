@@ -79,6 +79,10 @@ module "kms" {
     module.iam.security_scanner_role_arn,
     module.iam.resource_cleanup_role_arn,
     module.iam.report_generator_role_arn,
+    # STEP 25: the remediation_approval Lambda needs Lambda-scoped CMK access
+    # to decrypt its env vars at cold start AND DynamoDB-scoped access to read
+    # the CMK-encrypted approvals table (both grants key off this list).
+    module.iam.remediation_approval_role_arn,
   ]
   # STEP 21 hotfix: github_plan + github_deploy need Lambda-scoped CMK access
   # to refresh-decrypt and apply-encrypt env vars. Without this, CI plan shows
@@ -229,10 +233,15 @@ module "resource_cleanup" {
     SNS_TOPIC_ARN         = module.sns.topic_arn
     ENVIRONMENT           = var.environment
     LOG_LEVEL             = "INFO"
-    # Dry-run by default — actual deletes only happen when the Step Functions
-    # input or EventBridge target overrides this. Safety rail for the
-    # destructive permissions in the resource_cleanup role.
-    AUTO_REMEDIATE = "false"
+    # STEP 25 follow-up: ARMED (gate 1 = true). A real delete still needs the
+    # per-invocation event flag (gate 2) AND the AutoCleanup tag (gate 3) AND
+    # human approval (gate 4). The 6-hourly scan passes auto_remediate=false, so
+    # it stays dry-run; ONLY the approval workflow's DeleteApproved step (which
+    # sets the event flag true) can actually delete, and only after a human
+    # clicks Approve on a resource a human tagged AutoCleanup=true. Arming this
+    # env var spends the per-env master switch — the event flag + tag + approval
+    # are now the live guards. See PROGRESS.md STEP 25 follow-up.
+    AUTO_REMEDIATE = "true"
   }
 }
 
@@ -322,8 +331,76 @@ module "eventbridge" {
   report_lambda_arn  = module.report_generator.function_arn
   report_lambda_name = module.report_generator.function_name
 
-  # Scheduled scans are dry-run by default. See module docs for details.
+  # Scheduled SCAN stays dry-run (event flag false). Even with the cleanup
+  # Lambda's AUTO_REMEDIATE env var now armed (below), the 6-hourly scan can't
+  # delete — a real delete needs BOTH gates, and this flag stays false.
   auto_remediate = false
+
+  # STEP 25 follow-up: fire the human-in-the-loop remediation workflow daily.
+  # It self-gates (DetectZombies → AnyZombies Choice) — emails an approval only
+  # when a zombie exists, ends silently otherwise. Daily, not 6-hourly, to
+  # avoid stacking duplicate approval emails for a lingering zombie.
+  remediation_state_machine_arn = module.remediation.state_machine_arn
+}
+
+# -----------------------------------------------------------------------------
+# Remediation approval Lambda (STEP 25 — human-in-the-loop)
+#
+# Single Lambda, two modes (dispatched on event shape): NOTIFY (Step Functions
+# .waitForTaskToken target — emails signed Approve/Reject links) and CALLBACK
+# (HTTP API target — verifies the signature, resumes the paused execution).
+#
+# APPROVALS_TABLE + HMAC_PARAM_NAME are built by naming convention (NOT read
+# from module.remediation outputs) to avoid a dependency cycle: the remediation
+# module consumes THIS Lambda's ARN, so this Lambda must not consume the
+# remediation module's outputs. The convention matches modules/iam locals and
+# modules/remediation locals exactly.
+# -----------------------------------------------------------------------------
+module "remediation_approval" {
+  source        = "../../modules/lambda"
+  project       = var.project
+  environment   = var.environment
+  function_name = "${var.project}-${var.environment}-remediation-approval"
+  tags          = { Component = "remediation-approval" }
+  role_arn      = module.iam.remediation_approval_role_arn
+  source_dir    = "${path.root}/../../../src/remediation_approval/build"
+  kms_key_arn   = module.kms.key_arn
+
+  environment_variables = {
+    APPROVALS_TABLE      = "${var.project}-${var.environment}-approvals"
+    HMAC_PARAM_NAME      = "/${var.project}/${var.environment}/remediation/hmac-secret"
+    SES_SENDER_EMAIL     = local.ses_sender_email
+    ALERT_EMAIL          = var.alert_email
+    APPROVAL_TTL_SECONDS = "86400"
+    ENVIRONMENT          = var.environment
+    LOG_LEVEL            = "INFO"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Remediation module (STEP 25)
+#
+# The isolated, manually-triggered approval workflow: detect → email approval →
+# delete. A SEPARATE state machine from the 6-hourly scan workflow, so nothing
+# running is touched. Consumes the cleanup Lambda (detect + remediate modes) and
+# the approval Lambda (notify + callback). Creates the approvals table, the SSM
+# HMAC secret, the HTTP API, and the state machine.
+#
+# Human approval is an ADDITIVE 4th gate on deletion — STEP 12's env var + event
+# flag and STEP 18.5's IAM AutoCleanup tag all still apply. In dev AUTO_REMEDIATE
+# stays "false", so even an approved run dry-runs the delete: the full approval
+# path is exercised while no resource is actually removed.
+# -----------------------------------------------------------------------------
+module "remediation" {
+  source      = "../../modules/remediation"
+  tags        = { Component = "remediation-approval" }
+  project     = var.project
+  environment = var.environment
+  kms_key_arn = module.kms.key_arn
+
+  cleanup_lambda_arn   = module.resource_cleanup.function_arn
+  approval_lambda_arn  = module.remediation_approval.function_arn
+  approval_lambda_name = module.remediation_approval.function_name
 }
 
 # -----------------------------------------------------------------------------

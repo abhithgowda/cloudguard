@@ -147,6 +147,69 @@ class TestFindOldSnapshots:
 
 
 # ---------------------------------------------------------------------------
+# STEP 25 follow-up — AutoCleanup=ignore suppression (detection-time skip)
+# ---------------------------------------------------------------------------
+
+
+class TestIgnoreTagSuppression:
+    def test_is_ignored_matrix(self):
+        ignored = lambda v: zombie_finder._is_ignored([{"Key": "AutoCleanup", "Value": v}])
+        assert ignored("ignore") is True
+        assert ignored("IGNORE") is True   # case-insensitive
+        assert ignored(" skip ") is True   # whitespace-tolerant
+        assert ignored("false") is True
+        assert ignored("no") is True
+        assert ignored("true") is False    # "ok to delete" is NOT suppression
+        # Wrong key, empty, and None must never suppress.
+        assert zombie_finder._is_ignored([{"Key": "Name", "Value": "ignore"}]) is False
+        assert zombie_finder._is_ignored([]) is False
+        assert zombie_finder._is_ignored(None) is False
+
+    def test_ignored_volume_not_detected(self):
+        ec2 = MagicMock()
+        paginator = _ec2_paginator([{"Volumes": [{
+            "VolumeId": "vol-keep", "Size": 100, "VolumeType": "gp3",
+            "AvailabilityZone": "ap-south-1a",
+            "CreateTime": datetime.now(timezone.utc),
+            "Tags": [{"Key": "AutoCleanup", "Value": "ignore"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        assert zombie_finder.find_zombie_ebs_volumes(ec2) == []
+
+    def test_true_tagged_volume_still_detected(self):
+        # AutoCleanup=true is "ok to delete", not suppression — must be detected.
+        ec2 = MagicMock()
+        paginator = _ec2_paginator([{"Volumes": [{
+            "VolumeId": "vol-del", "Size": 100, "VolumeType": "gp3",
+            "AvailabilityZone": "ap-south-1a",
+            "CreateTime": datetime.now(timezone.utc),
+            "Tags": [{"Key": "AutoCleanup", "Value": "true"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        findings = zombie_finder.find_zombie_ebs_volumes(ec2)
+        assert len(findings) == 1 and findings[0]["resource_id"] == "vol-del"
+
+    def test_ignored_eip_not_detected(self):
+        ec2 = MagicMock()
+        ec2.describe_addresses.return_value = {"Addresses": [
+            {"AllocationId": "eip-keep", "PublicIp": "1.2.3.4", "Domain": "vpc",
+             "Tags": [{"Key": "AutoCleanup", "Value": "skip"}]},
+        ]}
+        assert zombie_finder.find_unused_elastic_ips(ec2) == []
+
+    def test_ignored_snapshot_not_detected(self):
+        ec2 = MagicMock()
+        old = datetime.now(timezone.utc) - timedelta(days=200)
+        paginator = _ec2_paginator([{"Snapshots": [{
+            "SnapshotId": "snap-keep", "StartTime": old, "VolumeSize": 500,
+            "StorageTier": "standard",
+            "Tags": [{"Key": "AutoCleanup", "Value": "false"}],
+        }]}])
+        ec2.get_paginator.return_value = paginator
+        assert zombie_finder.find_old_snapshots(ec2, age_days=180) == []
+
+
+# ---------------------------------------------------------------------------
 # handler.py — the two-gate auto-remediate matrix (the unique surface)
 # ---------------------------------------------------------------------------
 
@@ -270,3 +333,118 @@ class TestRemediate:
         # No handler for this type → no remediation attempt, no record.
         assert counts == {"success": 0, "failed": 0, "skipped_dry_run": 0}
         assert mock_bpf.call_args.args[1] == []
+
+
+# ---------------------------------------------------------------------------
+# STEP 25 — invocation modes (scan default / detect / remediate)
+# ---------------------------------------------------------------------------
+
+_FAKE_VOLUME = {
+    "resource_id": "vol-1",
+    "resource_type": "aws_ebs_volume",
+    "check_name": "zombie_ebs_volume",
+    "category": "cleanup",
+    "severity": "HIGH",
+    "description": "EBS volume vol-1 is available.",
+    "metadata": {"monthly_cost_usd": 85.20},
+}
+
+
+class TestDetectMode:
+    """mode='detect' returns the resource list and does NOT remediate."""
+
+    def test_detect_returns_resources_and_skips_remediation(self, cleanup_handler):
+        with patch.object(cleanup_handler, "find_zombie_ebs_volumes", return_value=[dict(_FAKE_VOLUME)]), \
+             patch.object(cleanup_handler, "find_unused_elastic_ips", return_value=[]), \
+             patch.object(cleanup_handler, "find_old_snapshots", return_value=[]), \
+             patch.object(cleanup_handler, "batch_upsert_findings",
+                          return_value={"total": 1, "inserted": 1, "updated": 0}), \
+             patch.object(cleanup_handler, "_remediate") as mock_remediate:
+            result = cleanup_handler.lambda_handler({"mode": "detect"}, None)
+
+        assert result["mode"] == "detect"
+        assert result["resource_count"] == 1
+        # The slim resource summary carries what the email + delete step need.
+        res = result["resources"][0]
+        assert res["resource_id"] == "vol-1"
+        assert res["resource_type"] == "aws_ebs_volume"
+        assert res["monthly_cost_usd"] == 85.20
+        assert "finding_id" in res  # deterministic id stamped in
+        # Detection only — no remediation, not even a dry-run row.
+        mock_remediate.assert_not_called()
+        assert "remediations" not in result
+
+    def test_detect_empty_returns_zero(self, cleanup_handler):
+        with patch.object(cleanup_handler, "find_zombie_ebs_volumes", return_value=[]), \
+             patch.object(cleanup_handler, "find_unused_elastic_ips", return_value=[]), \
+             patch.object(cleanup_handler, "find_old_snapshots", return_value=[]), \
+             patch.object(cleanup_handler, "batch_upsert_findings",
+                          return_value={"total": 0, "inserted": 0, "updated": 0}):
+            result = cleanup_handler.lambda_handler({"mode": "detect"}, None)
+        assert result["resource_count"] == 0
+        assert result["resources"] == []
+
+
+class TestRemediateMode:
+    """mode='remediate' deletes an EXPLICIT list, gated, with NO re-detection."""
+
+    def _event(self, armed_flag=True):
+        return {
+            "mode": "remediate",
+            "auto_remediate": armed_flag,
+            "resources": [{
+                "resource_id": "vol-1", "resource_type": "aws_ebs_volume",
+                "finding_id": "f1",
+            }],
+        }
+
+    def test_armed_deletes_explicit_list_without_redetecting(self, cleanup_handler, monkeypatch):
+        monkeypatch.setenv("AUTO_REMEDIATE", "true")
+        cleanup_handler.ec2 = MagicMock()
+        cleanup_handler.ec2.delete_volume.return_value = {}
+
+        with patch.object(cleanup_handler, "find_zombie_ebs_volumes") as mock_find, \
+             patch.object(cleanup_handler, "batch_put_findings"):
+            result = cleanup_handler.lambda_handler(self._event(True), None)
+
+        assert result["mode"] == "remediate"
+        assert result["auto_remediate_armed"] is True
+        assert result["remediations"]["success"] == 1
+        cleanup_handler.ec2.delete_volume.assert_called_once_with(VolumeId="vol-1")
+        # Critically: remediate must NOT re-run detection (TOCTOU guard).
+        mock_find.assert_not_called()
+
+    def test_gate_still_applies_dry_run_when_env_false(self, cleanup_handler, monkeypatch):
+        # Even with the event flag + human approval, the STEP 12 env gate alone
+        # forces a dry-run in dev (AUTO_REMEDIATE='false').
+        monkeypatch.setenv("AUTO_REMEDIATE", "false")
+        cleanup_handler.ec2 = MagicMock()
+
+        with patch.object(cleanup_handler, "batch_put_findings"):
+            result = cleanup_handler.lambda_handler(self._event(True), None)
+
+        assert result["auto_remediate_armed"] is False
+        assert result["remediations"]["skipped_dry_run"] == 1
+        cleanup_handler.ec2.delete_volume.assert_not_called()
+
+
+class TestScanModeUnchanged:
+    """Default (no mode) must behave exactly like the pre-STEP-25 scan path."""
+
+    def test_default_mode_scans_and_dry_runs(self, cleanup_handler, monkeypatch):
+        monkeypatch.setenv("AUTO_REMEDIATE", "false")
+        cleanup_handler.ec2 = MagicMock()
+        with patch.object(cleanup_handler, "find_zombie_ebs_volumes", return_value=[dict(_FAKE_VOLUME)]), \
+             patch.object(cleanup_handler, "find_unused_elastic_ips", return_value=[]), \
+             patch.object(cleanup_handler, "find_old_snapshots", return_value=[]), \
+             patch.object(cleanup_handler, "batch_upsert_findings",
+                          return_value={"total": 1, "inserted": 1, "updated": 0}), \
+             patch.object(cleanup_handler, "batch_put_findings"):
+            result = cleanup_handler.lambda_handler({}, None)
+
+        # Original summary shape — no "mode" key, has volumes_found + remediations.
+        assert "mode" not in result
+        assert result["volumes_found"] == 1
+        assert result["auto_remediate_armed"] is False
+        assert result["remediations"]["skipped_dry_run"] == 1
+        cleanup_handler.ec2.delete_volume.assert_not_called()

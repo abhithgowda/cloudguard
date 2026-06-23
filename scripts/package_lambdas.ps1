@@ -15,7 +15,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$Functions = @("cost_scanner", "security_scanner", "resource_cleanup", "report_generator")
+$Functions = @("cost_scanner", "security_scanner", "resource_cleanup", "report_generator", "remediation_approval")
 
 # Resolve repo root from this script's location so cwd doesn't matter.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

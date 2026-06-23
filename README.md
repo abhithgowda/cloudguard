@@ -1,4 +1,4 @@
-# CloudGuard - AWS Cost & Security Governance Engine
+# CloudGuard — AWS Cost & Security Governance Engine 
 
 CloudGuard is a production-grade, fully serverless system that continuously
 monitors an AWS account for **cost anomalies**, **security violations**, and
